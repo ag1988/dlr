@@ -1,3 +1,13 @@
+## Diagonal State Spaces are as Effective as Structured State Spaces
+
+This repository is built on a fork of the [S4 repo](https://github.com/HazyResearch/state-spaces) and contains the accompanying code for the paper:
+
+**"Diagonal State Spaces are as Effective as Structured State Spaces"**, Ankit Gupta. *arXiv preprint, 2022*. [[PDF]](https://arxiv.org/pdf/2203.14343.pdf) 
+
+
+**Code will be released sometime this week.** 
+
+
 # Structured State Spaces for Sequence Modeling
 
 This repository provides implementations and experiments for the following papers.
