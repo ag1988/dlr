@@ -21,8 +21,10 @@ This repository is built on a fork of the official [S4 repo](https://github.com/
 ## Setup
 
 ### Requirements
-This repository requires Python 3.8+ and Pytorch 1.9+.
-Other packages are listed in `requirements.txt`.
+This repository requires Python 3.8+ and [Pytorch 1.9+](https://pytorch.org/get-started/locally/).
+After installing PyTorch, other packages can be installed via `pip install -r requirements.txt`.
+
+If you will only be using Diagonal State Spaces, you do not need to install `pykeops` and the Cauchy kernels from [S4 repo](https://github.com/HazyResearch/state-spaces). Nevertheless, we strongly recommend following all instructions on S4 repo.
 
 ### Data
 
@@ -68,34 +70,31 @@ More detailed descriptions of the infrastructure are in the subsequent sections.
 
 ### Diagonal State Spaces (DSS)
 
-The `DSSLKernel` module is in `src/models/sequence/ss/dss.py`.
+The `DSS` layer is provided in a self-contained file `src/models/sequence/ss/standalone/dss.py`. You must explicitly provide the flag `model=dss_standalone` to each command as shown below.
 
-For users who would like to import a single file that has the self-contained DSS layer,
-a standalone version can be found at `src/models/sequence/ss/standalone/dss.py`.
+### Quick Testing
 
-### Testing
-
-For testing, we frequently use synthetic datasets or the Permuted MNIST dataset.
-This can be run with `python -m train wandb=null pipeline=mnist model=dss`, which should get to around 90% after 1 epoch which takes 1-3 minutes depending on GPU.
+For quick testing, we frequently use synthetic datasets or the Permuted MNIST dataset.
+This can be run with `CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dss_standalone pipeline=mnist`, which should get to around 90% after 1 epoch which takes 1-3 minutes depending on GPU.
 
 
 ### Long Range Arena (LRA)
 
-```
-python -m train wandb=null model=dss experiment=s4-lra-listops
-python -m train wandb=null model=dss experiment=s4-lra-imdb
-python -m train wandb=null model=dss experiment=s4-lra-cifar
-python -m train wandb=null model=dss experiment=s4-lra-aan
-python -m train wandb=null model=dss experiment=s4-lra-pathfinder
-python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01
+```bash
+python -m train wandb=null model=dss_standalone experiment=s4-lra-listops
+python -m train wandb=null model=dss_standalone experiment=s4-lra-imdb
+python -m train wandb=null model=dss_standalone experiment=s4-lra-cifar
+python -m train wandb=null model=dss_standalone experiment=s4-lra-aan
+python -m train wandb=null model=dss_standalone experiment=s4-lra-pathfinder
+python -m train wandb=null model=dss_standalone experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01
 ```
 
 ### Speech Commands
 
 The Speech Commands dataset [modified](https://arxiv.org/abs/2005.08926) as a smaller [10-way](https://arxiv.org/abs/2102.02611) classification task.
 
-```
-python -m train wandb=null model=dss experiment=s4-sc
+```bash
+python -m train wandb=null model=dss_standalone experiment=s4-sc
 ```
 
 #### Approximate training times on A100:
@@ -104,10 +103,23 @@ python -m train wandb=null model=dss experiment=s4-sc
 | Time       | 2h      |  20m |  <9h | <6h |  9h   |   2d    |  <19h |
 
 
+#### Grid search
+You can directly tinker with the hyperparameters via flags. E.g. 
+```bash
+python -m train wandb=null model=dss_standalone experiment=s4-lra-pathfinder train.seed=42 scheduler.patience=13 trainer.max_epochs=250
+```
+
 #### Resuming from a checkpoint:
 In case your training is incomplete, you can resume from the last checkpoint as follows (note that wandb will pick up from where the last partial run left off and will not copy the previous logs):
 ```
 python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01 trainer.resume_from_checkpoint=/--Global--path/dss/outputs/--The--run--dir--/checkpoints/last.ckpt
+```
+
+#### Gradient Accumulation
+If you're getting OOMs with large batches, you can use gradient accumulation as
+```bash
+python -m train wandb=null model=dss_standalone experiment=s4-lra-pathx loader.batch_size=8 trainer.accumulate_grad_batches=2
+# so total batch size = 8 x 2 = 16
 ```
 
 ---
@@ -255,36 +267,6 @@ The SequenceModule comes with other methods such as `step` which is meant for au
 SequenceModel `src/models/sequence/model.py` is the main backbone with configurable options for residual function, normalization placement and type, etc.
 SequenceModel accepts a black box config for a layer. Compatible layers are SequenceModules (i.e. composable sequence transformations) found under `src/models/sequence/`.
 
-### S4
-
-This is the main model of this repository.
-See instructions in [Getting Started](#-structured-state-space-(s4)).
-
-### LSSL
-
-The LSSL is the predecessor of S4. It is currently not recommended for use, but the model can be found at `src/models/sequence/ss/lssl.py`.
-
-It can be run with `model/layer=lssl` or `model/layer=lssl model.layer.learn=0` for the LSSL-fixed model which does not train A, B, or dt.
-
-### HiPPO
-
-HiPPO is the mathematical framework upon which the papers HiPPO, LSSL, and S4 are built on.
-The logic for HiPPO operators is found under `src/models/hippo/`.
-
-HiPPO-RNN cells from the original [paper](https://arxiv.org/abs/2008.07669) can be found under the [RNN cells](#-rnns)
-
-### RNNs
-
-This codebase contains a flexible and modular implementation of many RNN cells.
-
-Some examples include `model=rnn/hippo-legs` and `model=rnn/hippo-legt` for HiPPO variants from the original [paper](https://arxiv.org/abs/2008.07669), or `model=rnn/gru` for a GRU reimplementation, etc.
-
-An exception is `model=lstm` to use the PyTorch LSTM.
-
-Example command (reproducing the Permuted MNIST number from the HiPPO paper, which was SotA at the time):
-```
-python train.py pipeline=mnist model=rnn/hippo-legs model.cell_args.hidden_size=512 train.epochs=50 train.batch_size=100 train.lr=0.001
-```
 
 ### Baselines
 Other sequence models are easily incorporated into this repository,

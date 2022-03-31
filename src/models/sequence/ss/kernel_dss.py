@@ -15,16 +15,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from opt_einsum import contract as einsum
 
 from omegaconf import DictConfig
 
-try:
-    from opt_einsum import contract as einsum
-except ImportError:
-    from torch import einsum
-
-
-# from src.models.sequence.ss.kernel import OptimModule
 
 import src.utils.train
 log = src.utils.train.get_logger(__name__)
@@ -82,6 +76,7 @@ class DSSKernel(OptimModule):
         trainable=None,       # Dictionary of options to train various DSS parameters
         lr=None,              # Hook to set LR of DSS parameters differently
         sep_dt_re_im=True,    # use separate deltas for real, imag parts of Lambda
+        init='hippo_skew_pos_imag',
     ):
         super().__init__()
         
@@ -89,7 +84,7 @@ class DSSKernel(OptimModule):
         
         # complex tensors are stored as real with an extra last dim of size 2 
         # to denote real, imag parts as ADAM moments are non-linear  
-        log_dt, Lambda, W = self.init(N, H, l_max, dt_min, dt_max, sep_dt_re_im)  # [H], [N,2], [H,N,2] 
+        log_dt, Lambda, W = self.init(N, H, l_max, dt_min, dt_max, sep_dt_re_im, init)  # [H], [N,2], [H,N,2] 
         
         self.lr = DictConfig({"log_dt": 1e-3, "Lambda": 1e-3, "W": 1e-3})
         if lr is not None:
@@ -104,8 +99,9 @@ class DSSKernel(OptimModule):
         self.register("W",      W,      self.trainable.W,      self.lr.W,      wd=0.0)  # [H,N]
         
 
-    def init(self, N, H, l_max, dt_min, dt_max, sep_dt_re_im):
-        w = hippo_skew_evals(2*N)[:N] - .5                              # [N]
+    def init(self, N, H, l_max, dt_min, dt_max, sep_dt_re_im, init):
+        if init == 'hippo_skew_pos_imag':
+            w = hippo_skew_evals(2*N)[:N] - .5                          # [N]
         Lambda = torch.view_as_real(w.reshape(-1).to(torch.cfloat))     # [N,2]
         
         # log delta

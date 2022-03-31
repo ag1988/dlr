@@ -1,5 +1,4 @@
-_name_: dss
-mode: dss
+_name_: dss_standalone
 d_state: 64
 bidirectional: false
 activation: gelu

@@ -23,7 +23,7 @@ else:
     contract = torch.einsum
 
 from src.models.sequence.ss.kernel import HippoSSKernel
-from src.models.sequence.ss.dss import DSSKernel
+from src.models.sequence.ss.kernel_dss import DSSKernel
 from src.models.nn import LinearActivation, Activation
 
 class S4(nn.Module):
