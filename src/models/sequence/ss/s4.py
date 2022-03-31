@@ -23,6 +23,7 @@ else:
     contract = torch.einsum
 
 from src.models.sequence.ss.kernel import HippoSSKernel
+from src.models.sequence.ss.dss import DSSKernel
 from src.models.nn import LinearActivation, Activation
 
 class S4(nn.Module):
@@ -43,6 +44,7 @@ class S4(nn.Module):
             transposed=True, # axis ordering (B, L, D) or (B, D, L)
             verbose=False,
             # SSM Kernel arguments
+            mode="nplr",     # 'npl: S4 , dss: DSS'
             **kernel_args,
         ):
         """
@@ -81,10 +83,12 @@ class S4(nn.Module):
         if self.bidirectional:
             channels *= 2
 
-
         # SSM Kernel
-        self.kernel = HippoSSKernel(self.h, N=self.n, L=l_max, channels=channels, verbose=verbose, **kernel_args)
-
+        if mode == 'dss':
+            self.kernel = DSSKernel(self.h, self.n, l_max, **kernel_args)
+        else:
+            self.kernel = HippoSSKernel(self.h, N=self.n, L=l_max, channels=channels, verbose=verbose, **kernel_args)
+            
         # Pointwise
         self.activation = Activation(activation)
         dropout_fn = nn.Dropout2d if self.transposed else nn.Dropout
@@ -112,7 +116,7 @@ class S4(nn.Module):
 
         # Compute SS Kernel
         k, k_state = self.kernel(L=L, state=state) # (C H L) (B C H L)
-
+         
         # Convolution
         if self.bidirectional:
             k0, k1 = rearrange(k, '(s c) h l -> s c h l', s=2)

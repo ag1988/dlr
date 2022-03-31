@@ -1,54 +1,23 @@
-## Diagonal State Spaces are as Effective as Structured State Spaces
+# Code will be released sometime this week.
 
-This repository is built on a fork of the [S4 repo](https://github.com/HazyResearch/state-spaces) and contains the accompanying code for the paper:
+## Diagonal State Spaces (DSS)
 
-**"Diagonal State Spaces are as Effective as Structured State Spaces"**, Ankit Gupta. *arXiv preprint, 2022*. [[PDF]](https://arxiv.org/pdf/2203.14343.pdf) 
+This repository is built on a fork of the official [S4 repo](https://github.com/HazyResearch/state-spaces) & contains the accompanying code for the paper:
 
-
-**Code will be released sometime this week.** 
-
-
-# Structured State Spaces for Sequence Modeling
-
-This repository provides implementations and experiments for the following papers.
-
-## SaShiMi (arXiv)
-
-![SaShiMi](assets/sashimi.png "SaShiMi Architecture")
-> **It's Raw! Audio Generation with State-Space Models**\
-> Karan Goel, Albert Gu, Chris Donahue, Christopher Ré\
-> Paper: https://arxiv.org/abs/2202.09729
-
-## S4 (ICLR 2022 Oral)
-
-![Structured State Spaces](assets/properties.png "Properties of Structured State Spaces")
-> **Efficiently Modeling Long Sequences with Structured State Spaces**\
-> Albert Gu, Karan Goel, Christopher Ré\
-> Paper: https://arxiv.org/abs/2111.00396
-
-## LSSL (NeurIPS 2021)
-
-![Linear State Space Layer](assets/splash.png "Properties of Sequential State Spaces")
-> **Combining Recurrent, Convolutional, and Continuous-time Models with the Linear State Space Layer**\
-> Albert Gu, Isys Johnson, Karan Goel, Khaled Saab, Tri Dao, Atri Rudra, Christopher Ré\
-> Paper: https://arxiv.org/abs/2110.13985
-
-## HiPPO (NeurIPS 2020 Spotlight)
-![HiPPO Framework](assets/hippo.png "HiPPO Framework")
-> **HiPPO: Recurrent Memory with Optimal Polynomial Projections**\
-> Albert Gu*, Tri Dao*, Stefano Ermon, Atri Rudra, Christopher Ré\
-> Paper: https://arxiv.org/abs/2008.07669
-
+> **Diagonal State Spaces are as Effective as Structured State Spaces**\
+> Ankit Gupta\
+> Paper: https://arxiv.org/pdf/2203.14343
 
 ## Table of Contents
 - [Repository Setup](#setup)
-- S4
+- DSS / S4
   - [Experiments](#s4-experiments)
   - [Training](#training)
   - [Models](#models)
 - [SaShiMi](sashimi/README.md#sashimi)
 - [Repository Structure](#overall-repository-structure)
 - [Citation](#citation)
+
 ## Setup
 
 ### Requirements
@@ -70,6 +39,13 @@ The data path can be configured by the environment variable `DATA_PATH`, or defa
 Most of the dataloaders download their datasets automatically if not found.
 External datasets include Long Range Arena (LRA), which can be downloaded from their [GitHub page](https://github.com/google-research/long-range-arena),
 and the WikiText-103 language modeling dataset, which can be downloaded by the `getdata.sh` script from the [Transformer-XL codebase](https://github.com/kimiyoung/transformer-xl).
+
+E.g. LRA can be downloaded/extracted as:
+```bash
+wget https://storage.googleapis.com/long-range-arena/lra_release.gz
+tar -xvf lra_release.gz
+```
+
 These external datasets should be organized as follows:
 ```
 DATA_PATH/
@@ -83,6 +59,61 @@ DATA_PATH/
   wt103/
 ```
 Fine-grained control over the data directory is allowed, e.g. if the LRA ListOps files are located in `/home/lra/listops-1000/`, you can pass in `+dataset.data_dir=/home/lra/listops-1000` on the command line
+
+
+## DSS Experiments
+
+This section describes how to use the latest DSS model and reproduce the experiments.
+More detailed descriptions of the infrastructure are in the subsequent sections.
+
+### Diagonal State Spaces (DSS)
+
+The `DSSLKernel` module is in `src/models/sequence/ss/dss.py`.
+
+For users who would like to import a single file that has the self-contained DSS layer,
+a standalone version can be found at `src/models/sequence/ss/standalone/dss.py`.
+
+### Testing
+
+For testing, we frequently use synthetic datasets or the Permuted MNIST dataset.
+This can be run with `python -m train wandb=null pipeline=mnist model=dss`, which should get to around 90% after 1 epoch which takes 1-3 minutes depending on GPU.
+
+
+### Long Range Arena (LRA)
+
+```
+python -m train wandb=null model=dss experiment=s4-lra-listops
+python -m train wandb=null model=dss experiment=s4-lra-imdb
+python -m train wandb=null model=dss experiment=s4-lra-cifar
+python -m train wandb=null model=dss experiment=s4-lra-aan
+python -m train wandb=null model=dss experiment=s4-lra-pathfinder
+python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01
+```
+
+### Speech Commands
+
+The Speech Commands dataset [modified](https://arxiv.org/abs/2005.08926) as a smaller [10-way](https://arxiv.org/abs/2102.02611) classification task.
+
+```
+python -m train wandb=null model=dss experiment=s4-sc
+```
+
+#### Approximate training times on A100:
+| Experiment | ListOps  | IMDB |  AAN | CIFAR | PATHFINDER | PATHX | SC |
+| ---        |    ---   |  --- |  --- |     --- |    --- |    --- |--- |
+| Time       | 2h      |  20m |  <9h | <6h |  9h   |   2d    |  <19h |
+
+
+#### Resuming from a checkpoint:
+In case your training is incomplete, you can resume from the last checkpoint as follows (note that wandb will pick up from where the last partial run left off and will not copy the previous logs):
+```
+python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01 trainer.resume_from_checkpoint=/--Global--path/dss/outputs/--The--run--dir--/checkpoints/last.ckpt
+```
+
+---
+---
+
+# S4
 
 ### Cauchy Kernel
 
@@ -292,6 +323,13 @@ train.py         training loop entrypoint
 ## Citation
 If you use this codebase, or otherwise found our work valuable, please cite:
 ```
+@article{gupta2022dss,
+  title={Diagonal State Spaces are as Effective as Structured State Spaces},
+  author={Gupta, Ankit},
+  journal={arXiv preprint arXiv:2203.14343},
+  year={2022}
+}
+
 @article{goel2022sashimi,
   title={It's Raw! Audio Generation with State-Space Models},
   author={Goel, Karan and Gu, Albert and Donahue, Chris and R{\'e}, Christopher},
