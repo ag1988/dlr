@@ -70,23 +70,23 @@ More detailed descriptions of the infrastructure are in the subsequent sections.
 
 ### Diagonal State Spaces (DSS)
 
-The `DSS` layer is provided in a self-contained file `src/models/sequence/ss/standalone/dss.py`. You must explicitly provide the flag `model=dss_standalone` to each command as shown below.
+The `DSS` layer is provided in a self-contained file `src/models/sequence/ss/standalone/dss.py`. You must explicitly provide the flag `model=dss` to each command as shown below.
 
 ### Quick Testing
 
 For quick testing, we frequently use synthetic datasets or the Permuted MNIST dataset.
-This can be run with `CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dss_standalone pipeline=mnist`, which should get to around 90% after 1 epoch which takes 1-3 minutes depending on GPU.
+This can be run with `CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dss pipeline=mnist`, which should get to around 90% after 1 epoch which takes 1-3 minutes depending on GPU.
 
 
 ### Long Range Arena (LRA)
 
 ```bash
-python -m train wandb=null model=dss_standalone experiment=s4-lra-listops
-python -m train wandb=null model=dss_standalone experiment=s4-lra-imdb
-python -m train wandb=null model=dss_standalone experiment=s4-lra-cifar
-python -m train wandb=null model=dss_standalone experiment=s4-lra-aan
-python -m train wandb=null model=dss_standalone experiment=s4-lra-pathfinder
-python -m train wandb=null model=dss_standalone experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01
+python -m train wandb=null model=dss experiment=s4-lra-listops
+python -m train wandb=null model=dss experiment=s4-lra-imdb
+python -m train wandb=null model=dss experiment=s4-lra-cifar
+python -m train wandb=null model=dss experiment=s4-lra-aan
+python -m train wandb=null model=dss experiment=s4-lra-pathfinder
+python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01
 ```
 
 ### Speech Commands
@@ -94,7 +94,7 @@ python -m train wandb=null model=dss_standalone experiment=s4-lra-pathx model.la
 The Speech Commands dataset [modified](https://arxiv.org/abs/2005.08926) as a smaller [10-way](https://arxiv.org/abs/2102.02611) classification task.
 
 ```bash
-python -m train wandb=null model=dss_standalone experiment=s4-sc
+python -m train wandb=null model=dss experiment=s4-sc
 ```
 
 #### Approximate training times on A100:
@@ -106,21 +106,22 @@ python -m train wandb=null model=dss_standalone experiment=s4-sc
 #### Grid search
 You can directly tinker with the hyperparameters via flags. E.g. 
 ```bash
-python -m train wandb=null model=dss_standalone experiment=s4-lra-pathfinder train.seed=42 scheduler.patience=13 trainer.max_epochs=250
+python -m train wandb=null model=dss experiment=s4-lra-pathfinder train.seed=42 scheduler.patience=13 trainer.max_epochs=250
 ```
 
 #### Resuming from a checkpoint:
 In case your training is incomplete, you can resume from the last checkpoint as follows (note that wandb will pick up from where the last partial run left off and will not copy the previous logs):
-```
+```bash
 python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01 trainer.resume_from_checkpoint=/--Global--path/dss/outputs/--The--run--dir--/checkpoints/last.ckpt
 ```
 
 #### Gradient Accumulation
 If you're getting OOMs with large batches, you can use gradient accumulation as
 ```bash
-python -m train wandb=null model=dss_standalone experiment=s4-lra-pathx loader.batch_size=8 trainer.accumulate_grad_batches=2
+python -m train wandb=null model=dss experiment=s4-lra-pathx loader.batch_size=8 trainer.accumulate_grad_batches=2
 # so total batch size = 8 x 2 = 16
 ```
+Currently, kernel is computed for *every* sub-batch which is sub-optimal. Caching will be fixed in the near future.
 
 ---
 ---

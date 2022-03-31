@@ -23,7 +23,6 @@ else:
     contract = torch.einsum
 
 from src.models.sequence.ss.kernel import HippoSSKernel
-from src.models.sequence.ss.kernel_dss import DSSKernel
 from src.models.nn import LinearActivation, Activation
 
 class S4(nn.Module):
@@ -44,7 +43,6 @@ class S4(nn.Module):
             transposed=True, # axis ordering (B, L, D) or (B, D, L)
             verbose=False,
             # SSM Kernel arguments
-            mode="nplr",     # 'npl: S4 , dss: DSS'
             **kernel_args,
         ):
         """
@@ -84,10 +82,7 @@ class S4(nn.Module):
             channels *= 2
 
         # SSM Kernel
-        if mode == 'dss':
-            self.kernel = DSSKernel(self.h, self.n, l_max, **kernel_args)
-        else:
-            self.kernel = HippoSSKernel(self.h, N=self.n, L=l_max, channels=channels, verbose=verbose, **kernel_args)
+        self.kernel = HippoSSKernel(self.h, N=self.n, L=l_max, channels=channels, verbose=verbose, **kernel_args)
             
         # Pointwise
         self.activation = Activation(activation)

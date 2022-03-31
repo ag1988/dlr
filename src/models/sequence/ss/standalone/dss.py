@@ -162,6 +162,9 @@ class OptimModule(nn.Module):
 
 """ Misc functional utilities """
 
+_c2r = torch.view_as_real
+_r2c = torch.view_as_complex
+
 def reciprocal(x, epsilon=1e-7, clamp=False):
     '''bounded 1 / x'''
     x_conj = x.conj()
@@ -175,8 +178,8 @@ def hippo_skew_evals(N):
     '''eigenvalues of (Hippo - Hippo.t()) / 2  (largest imag part first)'''
     i = torch.arange(N, dtype=torch.float)
     x = 2*i + 1
-    Hippo = (x.view(-1,1) * x.view(1,-1)).sqrt().tril(diagonal=-1)  # [N,N]
-    Skew = (Hippo - Hippo.t()) / 2                                  # [N,N] 
+    Hippo = (x.view(-1,1) * x.view(1,-1)).sqrt().tril(diagonal=-1)  # [N N]
+    Skew = (Hippo - Hippo.t()) / 2                                  # [N N] 
     evals = torch.linalg.eigvals(Skew)                              # [N]
     # decreasing order of imag
     return evals[evals.imag.argsort(descending=True)]               # [N]
@@ -191,6 +194,7 @@ class DSSKernel(OptimModule):
         H,
         N=64,
         l_max=None,           # currently unused
+        channels=1,
         dt_min=1e-3,
         dt_max=1e-1,
         trainable=None,       # Dictionary of options to train various DSS parameters
@@ -200,11 +204,11 @@ class DSSKernel(OptimModule):
     ):
         super().__init__()
         
-        self.N, self.H, self.sep_dt_re_im = N, H, sep_dt_re_im
+        self.N, self.H, self.channels, self.sep_dt_re_im = N, H, channels, sep_dt_re_im
         
         # complex tensors are stored as real with an extra last dim of size 2 
         # to denote real, imag parts as ADAM moments are non-linear  
-        log_dt, Lambda, W = self.init(N, H, l_max, dt_min, dt_max, sep_dt_re_im, init)  # [H], [N,2], [H,N,2] 
+        log_dt, Lambda, W = self.init(N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, init)  # [H], [N,2], [H,N,2] 
         
         self.lr = DictConfig({"log_dt": 1e-3, "Lambda": 1e-3, "W": 1e-3})
         if lr is not None:
@@ -216,57 +220,57 @@ class DSSKernel(OptimModule):
         
         self.register("log_dt", log_dt, self.trainable.log_dt, self.lr.log_dt, wd=0.0)  # [H] or [H,2]
         self.register("Lambda", Lambda, self.trainable.Lambda, self.lr.Lambda, wd=0.0)  # [N,2] 
-        self.register("W",      W,      self.trainable.W,      self.lr.W,      wd=0.0)  # [H,N]
+        self.register("W",      W,      self.trainable.W,      self.lr.W,      wd=0.0)  # [C,H,N]
         
 
-    def init(self, N, H, l_max, dt_min, dt_max, sep_dt_re_im, init):
+    def init(self, N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, init):
         if init == 'hippo_skew_pos_imag':
             w = hippo_skew_evals(2*N)[:N] - .5                          # [N]
-        Lambda = torch.view_as_real(w.reshape(-1).to(torch.cfloat))     # [N,2]
+        Lambda = _c2r(w.reshape(-1).to(torch.cfloat))                   # [N,2]
         
         # log delta
         log_dt = math.log(dt_min) + torch.rand(H) * (math.log(dt_max) - math.log(dt_min))   # [H]
         if sep_dt_re_im:
             log_dt = log_dt.view(-1,1).tile(2)                          # [H,2]
         
-        W = torch.randn(H, N, 2)                                        # [H,N,2]
+        W = torch.randn(channels, H, N, 2)                              # [C,H,N,2]
         return log_dt, Lambda, W 
     
     
     def forward(self, L, state=None):
-        '''TODO: Currently during grad accum, we compute the kernel for each batch which needs to be fixed.
-                 We're slower than S4 as for them N=32 due to symmetry.
+        '''TODO: 1. Currently during grad accum, we compute the kernel for each batch which needs to be fixed.
+                 2. We're slower than S4 in some cases as in S4 effective N is N/2 due to conj symmetry.
         '''
         assert state is None, 'currently we dont support state'
         assert L >= 1
         
-        Lambda, W = map(torch.view_as_complex, (self.Lambda, self.W))      # [N], [H,N]
+        Lambda, W = map(_r2c, (self.Lambda, self.W))                     # [N], [C H N]
         
         if self.log_dt.ndim <= 1:
-            dt_Lambda = self.log_dt.exp().unsqueeze(-1) * Lambda           # [H,N]
+            dt_Lambda = self.log_dt.exp().unsqueeze(-1) * Lambda         # [H N]
         else:
             # Lambda.real * dt0  +  1j * Lambda.imag * dt1
-            dt_Lambda = torch.view_as_complex(self.log_dt.exp().unsqueeze(1) 
-                                              * self.Lambda.unsqueeze(0))  # [H,N]
+            dt_Lambda = _r2c(self.log_dt.exp().unsqueeze(1)
+                             * self.Lambda.unsqueeze(0))                 # [H N]
         
-        P = dt_Lambda.unsqueeze(-1) * torch.arange(L, device=W.device)     # [H,N,L]
+        P = dt_Lambda.unsqueeze(-1) * torch.arange(L, device=W.device)   # [H N L]
         
         # fast softmax using structure of P
         Lambda_gt_0 = Lambda.real > 0                                    # [N]
         if Lambda_gt_0.any():
             with torch.no_grad():
-                P_max = dt_Lambda * (Lambda_gt_0 * (L-1))                # [H,N]
-            P = P - P_max.unsqueeze(-1)                                  # [H,N,L]
-        S = P.exp()                                                      # [H,N,L]
+                P_max = dt_Lambda * (Lambda_gt_0 * (L-1))                # [H N]
+            P = P - P_max.unsqueeze(-1)                                  # [H N L]
+        S = P.exp()                                                      # [H N L]
         
-        dt_Lambda_neg = dt_Lambda * (1 - 2*Lambda_gt_0)                  # [H,N]
+        dt_Lambda_neg = dt_Lambda * (1 - 2*Lambda_gt_0)                  # [H N]
         # S.sum(-1) == den / num
-        num = dt_Lambda_neg.exp() - 1                                    # [H,N]
-        den = (dt_Lambda_neg * L).exp() - 1                              # [H,N]
-        W = W * num * reciprocal(den * Lambda)                           # [H,N]
+        num = dt_Lambda_neg.exp() - 1                                    # [H N]
+        den = (dt_Lambda_neg * L).exp() - 1                              # [H N]
+        W = W * num * reciprocal(den * Lambda)                           # [C H N]
         
-        return einsum('hn,hnl->hl', W, S).real.unsqueeze(0), state       # [H,L]
-    
+        return einsum('chn,hnl->chl', W, S).float(), state               # [C H L]
+
 
 class DSS(nn.Module):
 
@@ -328,7 +332,7 @@ class DSS(nn.Module):
             channels *= 2
 
         # SSM Kernel
-        self.kernel = DSSKernel(self.h, self.n, l_max, **kernel_args)
+        self.kernel = DSSKernel(self.h, self.n, l_max=l_max, channels=channels, **kernel_args)
 
         # Pointwise
         self.activation = Activation(activation)
