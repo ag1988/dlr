@@ -185,6 +185,8 @@ def hippo_skew_evals(N):
     return evals[evals.imag.argsort(descending=True)]               # [N]
 
 
+""" DSS """
+
 class DSSKernel(OptimModule):
     """ DSS kernel based on structured softmax (arxiv.org/abs/2203.14343).  
         OptimModule is for setting learning rates for parameters.
@@ -200,15 +202,17 @@ class DSSKernel(OptimModule):
         trainable=None,       # Dictionary of options to train various DSS parameters
         lr=None,              # Hook to set LR of DSS parameters differently
         sep_dt_re_im=True,    # use separate deltas for real, imag parts of Lambda
-        init='hippo_skew_pos_imag',
+        init='hippo_skew_pos_imag',   # init of Lambda 
+        epsilon=1e-7,         # bounds the kernel entries
     ):
         super().__init__()
         
         self.N, self.H, self.channels, self.sep_dt_re_im = N, H, channels, sep_dt_re_im
+        self.epsilon = epsilon
         
         # complex tensors are stored as real with an extra last dim of size 2 
         # to denote real, imag parts as ADAM moments are non-linear  
-        log_dt, Lambda, W = self.init(N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, init)  # [H], [N,2], [H,N,2] 
+        log_dt, Lambda, W = self.init(N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, init)  # [H], [N 2], [H N 2] 
         
         self.lr = DictConfig({"log_dt": 1e-3, "Lambda": 1e-3, "W": 1e-3})
         if lr is not None:
@@ -220,20 +224,20 @@ class DSSKernel(OptimModule):
         
         self.register("log_dt", log_dt, self.trainable.log_dt, self.lr.log_dt, wd=0.0)  # [H] or [H,2]
         self.register("Lambda", Lambda, self.trainable.Lambda, self.lr.Lambda, wd=0.0)  # [N,2] 
-        self.register("W",      W,      self.trainable.W,      self.lr.W,      wd=0.0)  # [C,H,N]
+        self.register("W",      W,      self.trainable.W,      self.lr.W,      wd=0.0)  # [C H N]
         
 
     def init(self, N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, init):
         if init == 'hippo_skew_pos_imag':
             w = hippo_skew_evals(2*N)[:N] - .5                          # [N]
-        Lambda = _c2r(w.reshape(-1).to(torch.cfloat))                   # [N,2]
+        Lambda = _c2r(w.reshape(-1).to(torch.cfloat))                   # [N 2]
         
         # log delta
         log_dt = math.log(dt_min) + torch.rand(H) * (math.log(dt_max) - math.log(dt_min))   # [H]
         if sep_dt_re_im:
             log_dt = log_dt.view(-1,1).tile(2)                          # [H,2]
         
-        W = torch.randn(channels, H, N, 2)                              # [C,H,N,2]
+        W = torch.randn(channels, H, N, 2)                              # [C H N 2]
         return log_dt, Lambda, W 
     
     
@@ -267,7 +271,7 @@ class DSSKernel(OptimModule):
         # S.sum(-1) == den / num
         num = dt_Lambda_neg.exp() - 1                                    # [H N]
         den = (dt_Lambda_neg * L).exp() - 1                              # [H N]
-        W = W * num * reciprocal(den * Lambda)                           # [C H N]
+        W = W * num * reciprocal(den * Lambda, self.epsilon)             # [C H N]
         
         return einsum('chn,hnl->chl', W, S).float(), state               # [C H L]
 
