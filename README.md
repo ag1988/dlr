@@ -24,7 +24,7 @@ This repository is built on a fork of the official [S4 repo](https://github.com/
 This repository requires Python 3.8+ and [Pytorch 1.9+](https://pytorch.org/get-started/locally/).
 After installing PyTorch, other packages can be installed via `pip install -r requirements.txt`.
 
-If you will only be using Diagonal State Spaces, you do not need to install `pykeops` and the Cauchy kernels from [S4 repo](https://github.com/HazyResearch/state-spaces). Nevertheless, we strongly recommend following all instructions on S4 repo.
+If you'll only be using DSS, you dont need to install `pykeops` & Cauchy kernels from [S4 repo](https://github.com/HazyResearch/state-spaces). But we strongly recommend following all instructions on the S4 repo & installing these as they're required for S4.
 
 ### Data
 
@@ -65,8 +65,8 @@ Fine-grained control over the data directory is allowed, e.g. if the LRA ListOps
 
 ## DSS Experiments
 
-This section describes how to use the latest DSS model and reproduce the experiments.
-More detailed descriptions of the infrastructure are in the subsequent sections.
+This section describes how to use the latest DSS model & reproduce the experiments.
+More detailed descriptions of the infrastructure are in later sections.
 
 ### Diagonal State Spaces (DSS)
 
@@ -83,10 +83,10 @@ This can be run with `CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=ds
 ```bash
 python -m train wandb=null model=dss experiment=s4-lra-listops
 python -m train wandb=null model=dss experiment=s4-lra-imdb
-python -m train wandb=null model=dss experiment=s4-lra-cifar
 python -m train wandb=null model=dss experiment=s4-lra-aan
-python -m train wandb=null model=dss experiment=s4-lra-pathfinder
-python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_dt=0.0001 model.layer.dt_min=0.0001 model.layer.dt_max=0.01
+python -m train wandb=null model=dss experiment=s4-lra-cifar trainer.max_epochs=200
+python -m train wandb=null model=dss experiment=s4-lra-pathfinder scheduler.patience=13
+python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.lr.log_dt=0.0001 loader.batch_size=16
 ```
 
 ### Speech Commands
