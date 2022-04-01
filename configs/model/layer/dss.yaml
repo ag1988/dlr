@@ -16,6 +16,6 @@ lr:
     Lambda: 0.001
     W: 0.001
 sep_dt_re_im: true
-init: hippo_skew_pos_imag
+Lambda_init: hippo_skew_pos_imag
 l_max: ${oc.select:dataset.__l_max,1} # Grab dataset length if exists, otherwise set to 1 and kernel will automatically resize
 verbose: false

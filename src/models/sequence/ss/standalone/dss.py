@@ -202,17 +202,17 @@ class DSSKernel(OptimModule):
         trainable=None,       # Dictionary of options to train various DSS parameters
         lr=None,              # Hook to set LR of DSS parameters differently
         sep_dt_re_im=True,    # use separate deltas for real, imag parts of Lambda
-        init='hippo_skew_pos_imag',   # init of Lambda 
+        Lambda_init='hippo_skew_pos_imag',
         epsilon=1e-7,         # bounds the kernel entries
     ):
         super().__init__()
         
         self.N, self.H, self.channels, self.sep_dt_re_im = N, H, channels, sep_dt_re_im
-        self.epsilon = epsilon
+        self.Lambda_init, self.epsilon = Lambda_init, epsilon
         
         # complex tensors are stored as real with an extra last dim of size 2 
         # to denote real, imag parts as ADAM moments are non-linear  
-        log_dt, Lambda, W = self.init(N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, init)  # [H], [N 2], [H N 2] 
+        log_dt, Lambda, W = self.init(N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, Lambda_init)  # [H], [N 2], [H N 2] 
         
         self.lr = DictConfig({"log_dt": 1e-3, "Lambda": 1e-3, "W": 1e-3})
         if lr is not None:
@@ -227,9 +227,14 @@ class DSSKernel(OptimModule):
         self.register("W",      W,      self.trainable.W,      self.lr.W,      wd=0.0)  # [C H N]
         
 
-    def init(self, N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, init):
-        if init == 'hippo_skew_pos_imag':
+    def init(self, N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, Lambda_init):
+        if Lambda_init == 'hippo_skew_pos_imag':
             w = hippo_skew_evals(2*N)[:N] - .5                          # [N]
+        elif Lambda_init == 'randn':
+            w = torch.randn(N, dtype=torch.cfloat)                      # [N]
+        else:
+            raise NotImplementedError(f"Lambda init {Lambda_init} is not implemented")
+        
         Lambda = _c2r(w.reshape(-1).to(torch.cfloat))                   # [N 2]
         
         # log delta

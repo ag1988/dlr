@@ -98,17 +98,17 @@ python -m train wandb=null model=dss experiment=s4-sc
 ```
 
 #### Approximate test accuracy (at best validation checkpoint) & training time on A100:
-|            | listops  | imdb |  aan | lra-cifar | pathfinder | pathx |  sc  |
-| ---        |    ---   |  --- |  --- |   --- |    ---     |  ---   | ---  |
-| **acc**    | 58.2     | 76.3 |  87.8| 85.7  | 84.6       | 85    | 97.7 |
-| **time**   | 2h       |  20m |  <9h | <6h   |  9h        |  36h   | <19h |
+|            | listops  | imdb |  aan  | lra-cifar | pathfinder | pathx |  sc  |
+| ---        |    ---   |  --- |  ---  |   ---     |    ---     |  ---  | ---  |
+| **acc**    | 58.2     | 76.3 |  87.8 | 85.7      | 84.6       | 85    | 97.7 |
+| **time**   | 2h       |  20m |  9h   |  6h       |  9h        |  36h  | 19h  |
 
-These metrics can vary depending on GPU. On pathx, loss should start to decrease around global step 90k (10h).
+These metrics can vary depending on GPU. On path-x, loss should start to decrease around global step 90k (10h).
 
 #### Tuning
 You can directly tinker with hyperparameters via flags. E.g. 
 ```bash
-python -m train wandb=null model=dss experiment=s4-lra-cifar train.seed=42 scheduler.patience=15 trainer.max_epochs=250
+python -m train wandb=null model=dss experiment=s4-lra-cifar model.layer.Lambda_init=randn model.layer.d_state=32 train.seed=42 scheduler.patience=15 trainer.max_epochs=250
 ```
 
 #### Resuming from a checkpoint:
