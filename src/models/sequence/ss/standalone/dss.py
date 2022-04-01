@@ -189,7 +189,7 @@ def hippo_skew_evals(N):
 
 class DSSKernel(OptimModule):
     """ DSS kernel based on structured softmax (arxiv.org/abs/2203.14343).  
-        OptimModule is for setting learning rates for parameters.
+        OptimModule is for conveniently setting learning rates for parameters.
     """
     def __init__(
         self,
@@ -203,7 +203,7 @@ class DSSKernel(OptimModule):
         lr=None,              # Hook to set LR of DSS parameters differently
         sep_dt_re_im=True,    # use separate deltas for real, imag parts of Lambda
         Lambda_init='hippo_skew_pos_imag',
-        epsilon=1e-7,         # bounds the kernel entries
+        epsilon=1e-7,         # avoids division by 0
     ):
         super().__init__()
         
@@ -238,7 +238,7 @@ class DSSKernel(OptimModule):
         Lambda = _c2r(w.reshape(-1).to(torch.cfloat))                   # [N 2]
         
         # log delta
-        log_dt = math.log(dt_min) + torch.rand(H) * (math.log(dt_max) - math.log(dt_min))   # [H]
+        log_dt = math.log(dt_min) + torch.rand(H) * (math.log(dt_max) - math.log(dt_min))  # [H]
         if sep_dt_re_im:
             log_dt = log_dt.view(-1,1).tile(2)                          # [H,2]
         
@@ -247,8 +247,8 @@ class DSSKernel(OptimModule):
     
     
     def forward(self, L, state=None):
-        '''TODO: 1. Currently during grad accum, we compute the kernel for each batch which needs to be fixed.
-                 2. We're slower than S4 in some cases as in S4 effective N is N/2 due to conj symmetry.
+        '''TODO: 1. We're slower than S4 in some cases as in S4 effective N is N/2 due to conj symmetry. 
+                    Explore how to do it here.
         '''
         assert state is None, 'currently we dont support state'
         assert L >= 1
@@ -312,6 +312,8 @@ class DSS(nn.Module):
         transposed: choose backbone axis ordering of (B, L, H) or (B, H, L) [B=batch size, L=sequence length, H=hidden dimension]
 
         Other options are all experimental and should not need to be configured
+        
+        TODO: 1. Currently during grad accum, kernel is computed for each sub-batch which is wasteful.
         """
 
         super().__init__()
