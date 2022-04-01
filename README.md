@@ -98,10 +98,10 @@ python -m train wandb=null model=dss experiment=s4-sc
 ```
 
 #### Approximate test accuracy (at best validation checkpoint) & training time on A100:
-| experiment | listops  | imdb |  aan | lra-cifar | pathfinder | pathx |  sc  |
+|            | listops  | imdb |  aan | lra-cifar | pathfinder | pathx |  sc  |
 | ---        |    ---   |  --- |  --- |   --- |    ---     |  ---   | ---  |
-| acc        | 58.2     | 76.3 |  87.8| 85.7  | 84.6       | 85    | 97.7 |
-| time       | 2h       |  20m |  <9h | <6h   |  9h        |  36h   | <19h |
+| **acc**    | 58.2     | 76.3 |  87.8| 85.7  | 84.6       | 85    | 97.7 |
+| **time**   | 2h       |  20m |  <9h | <6h   |  9h        |  36h   | <19h |
 
 These metrics can vary depending on GPU. On pathx, loss should start to decrease around global step 90k (10h).
 
