@@ -24,7 +24,7 @@ This repository is built on a fork of the official [S4 repo](https://github.com/
 This repository requires Python 3.8+ and [Pytorch 1.9+](https://pytorch.org/get-started/locally/).
 After installing PyTorch, other packages can be installed via `pip install -r requirements.txt`.
 
-If you'll only be using DSS, you dont need to install `pykeops` & Cauchy kernels from [S4 repo](https://github.com/HazyResearch/state-spaces). But we strongly recommend following all instructions on the S4 repo & installing these as they're required for S4.
+If you'll only be using DSS, installing `pykeops` & the Cauchy kernels from [S4 repo](https://github.com/HazyResearch/state-spaces) is optional. But we strongly recommend following all installation instructions on S4 repo & installing these as they're required for S4.
 
 ### Data
 
@@ -36,7 +36,7 @@ The datasets that we consider core are located in `src/dataloaders/datasets.py`.
 
 #### Data
 The raw data should be organized as follows.
-The data path can be configured by the environment variable `DATA_PATH`, or defaults to `./data` by default, where `.` is the top level directory of this repository (e.g. 'state-spaces').
+The data path can be configured by the environment variable `DATA_PATH`, or defaults to `./data` by default, where `.` is the top level directory of this repository (e.g. `dss` or `state-spaces`).
 
 Most of the dataloaders download their datasets automatically if not found.
 External datasets include Long Range Arena (LRA), which can be downloaded from their [GitHub page](https://github.com/google-research/long-range-arena),
@@ -60,7 +60,7 @@ DATA_PATH/
   listops/
   wt103/
 ```
-Fine-grained control over the data directory is allowed, e.g. if the LRA ListOps files are located in `/home/lra/listops-1000/`, you can pass in `+dataset.data_dir=/home/lra/listops-1000` on the command line
+Fine-grained control over the data directory is allowed, e.g. if the LRA ListOps files are located in `/home/lra/listops-1000/`, you can pass in `+dataset.data_dir=/home/lra/listops-1000` on the command line.
 
 
 ## DSS Experiments
@@ -84,29 +84,31 @@ This can be run with `CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=ds
 python -m train wandb=null model=dss experiment=s4-lra-listops
 python -m train wandb=null model=dss experiment=s4-lra-imdb
 python -m train wandb=null model=dss experiment=s4-lra-aan
-python -m train wandb=null model=dss experiment=s4-lra-cifar trainer.max_epochs=200
+python -m train wandb=null model=dss experiment=s4-lra-cifar trainer.max_epochs=200 train.seed=0
 python -m train wandb=null model=dss experiment=s4-lra-pathfinder scheduler.patience=13
 python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.lr.log_dt=0.0001 loader.batch_size=16
 ```
 
 ### Speech Commands
 
-The Speech Commands dataset [modified](https://arxiv.org/abs/2005.08926) as a smaller [10-way](https://arxiv.org/abs/2102.02611) classification task.
+The Speech Commands dataset modified as a [smaller](https://arxiv.org/abs/2005.08926) [10-way](https://arxiv.org/abs/2102.02611) classification task.
 
 ```bash
 python -m train wandb=null model=dss experiment=s4-sc
 ```
 
-#### Approximate training times on A100:
-| Experiment | ListOps  | IMDB |  AAN | CIFAR | PATHFINDER | PATHX | SC |
-| ---        |    ---   |  --- |  --- |     --- |    --- |    --- |--- |
-| Time       | 2h      |  20m |  <9h | <6h |  9h   |   2d    |  <19h |
+#### Approximate test accuracy (at best validation checkpoint) & training time on A100:
+| experiment | listops  | imdb |  aan | lra-cifar | pathfinder | pathx |  sc  |
+| ---        |    ---   |  --- |  --- |   --- |    ---     |  ---   | ---  |
+| acc        | 58.2     | 76.3 |  87.8| 85.7  | 84.6       | 85    | 97.7 |
+| time       | 2h       |  20m |  <9h | <6h   |  9h        |  36h   | <19h |
 
+These metrics can vary depending on GPU. On pathx, loss should start to decrease around global step 90k (10h).
 
-#### Grid search
-You can directly tinker with the hyperparameters via flags. E.g. 
+#### Tuning
+You can directly tinker with hyperparameters via flags. E.g. 
 ```bash
-python -m train wandb=null model=dss experiment=s4-lra-pathfinder train.seed=42 scheduler.patience=13 trainer.max_epochs=250
+python -m train wandb=null model=dss experiment=s4-lra-cifar train.seed=42 scheduler.patience=15 trainer.max_epochs=250
 ```
 
 #### Resuming from a checkpoint:
@@ -119,9 +121,9 @@ python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.lr.log_
 If you're getting OOMs with large batches, you can use gradient accumulation as
 ```bash
 python -m train wandb=null model=dss experiment=s4-lra-pathx loader.batch_size=8 trainer.accumulate_grad_batches=2
-# so total batch size = 8 x 2 = 16
+# total batch size = 8 x 2 = 16
 ```
-Currently, kernel is computed for *every* sub-batch which is sub-optimal. Caching will be fixed in the near future.
+Currently during grad accum, same kernel is computed for *every* sub-batch which is wasteful. Caching of kernels will be fixed in the future.
 
 ---
 ---
