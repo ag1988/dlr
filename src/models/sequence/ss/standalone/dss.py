@@ -166,16 +166,38 @@ _c2r = torch.view_as_real
 _r2c = torch.view_as_complex
 
 def reciprocal(x, epsilon=1e-7, clamp=False):
-    '''bounded 1 / x'''
+    """ returns 1 / x, with bounded norm """
     x_conj = x.conj()
     norm_sq = (x*x_conj).real.clamp(epsilon) if clamp else (x*x_conj + epsilon)
     return x_conj / norm_sq
 
 
+def multiply_polynomials(x, y, pad_to_pow2=True):
+    """ 
+    x : coefficients of polynomial x(z)  [..., a+1]
+    y : coefficients of polynomial y(z)  [..., b+1]
+    returns coeffs of product x(z).y(z)  [..., a+b+1]
+    i.e. (x_0,...,x_a) * (y_0,...,y_b) --> (x_0*y_0, ..., x_0*y_r+...+x_r*y_0 , ..., x_a*y_b)
+    """
+    if all(t.is_floating_point() for t in (x, y)):
+        fft, ifft = torch.fft.rfft, torch.fft.irfft
+    else:
+        fft, ifft = torch.fft.fft, torch.fft.ifft
+    
+    # pad the polynomials to degree deg(x)+deg(y) to avoid wrap-around
+    n = (x.shape[-1] - 1) + (y.shape[-1] - 1) + 1
+    if pad_to_pow2:
+        n = 2**math.ceil(math.log2(n))                     # next pow of 2
+    x_f = fft(x, n=n)
+    y_f = fft(y, n=n)
+    xy_f = x_f * y_f
+    return ifft(xy_f, n=n)
+
+
 """ HiPPO utilities """
 
 def hippo_skew_evals(N):
-    '''eigenvalues of (Hippo - Hippo.t()) / 2  (largest imag part first)'''
+    """ eigenvalues of (Hippo - Hippo.t()) / 2  (largest imag part first) """
     i = torch.arange(N, dtype=torch.float)
     x = 2*i + 1
     Hippo = (x.view(-1,1) * x.view(1,-1)).sqrt().tril(diagonal=-1)  # [N N]
@@ -299,6 +321,7 @@ class DSS(nn.Module):
             dropout=0.0,
             transposed=True, # axis ordering (B, L, D) or (B, D, L)
             verbose=False,
+            max_kernel_length=None,  # max len of SSM kernel to be used
             # SSM Kernel arguments
             **kernel_args,
         ):
@@ -310,7 +333,7 @@ class DSS(nn.Module):
         bidirectional: bidirectional
         dropout: standard dropout argument
         transposed: choose backbone axis ordering of (B, L, H) or (B, H, L) [B=batch size, L=sequence length, H=hidden dimension]
-
+        
         Other options are all experimental and should not need to be configured
         
         TODO: 1. Currently during grad accum, kernel is computed for each sub-batch which is wasteful.
@@ -321,8 +344,6 @@ class DSS(nn.Module):
             import src.utils.train
             log = src.utils.train.get_logger(__name__)
             log.info(f"Constructing S4 (H, N, L) = ({d_model}, {d_state}, {l_max})")
-        
-        assert channels == 1, 'multiple channels currently not supported'
         
         self.h = d_model
         self.n = d_state
@@ -343,8 +364,9 @@ class DSS(nn.Module):
             channels *= 2
 
         # SSM Kernel
+        self.max_kernel_length = max_kernel_length
         self.kernel = DSSKernel(self.h, self.n, l_max=l_max, channels=channels, **kernel_args)
-
+                
         # Pointwise
         self.activation = Activation(activation)
         dropout_fn = nn.Dropout2d if self.transposed else nn.Dropout
@@ -373,18 +395,22 @@ class DSS(nn.Module):
         L = u.size(-1)
 
         # Compute SS Kernel
-        k, _ = self.kernel(L=L) # (C H L) (B C H L)
-
+        Lk = L if not self.max_kernel_length else min(self.max_kernel_length, L)
+        k, _ = self.kernel(L=Lk)  # (C H Lk) (B C H Lk)
+        
         # Convolution
         if self.bidirectional:
             k0, k1 = rearrange(k, '(s c) h l -> s c h l', s=2)
-            k = F.pad(k0, (0, L)) + F.pad(k1.flip(-1), (L, 0))
-
-        k_f = torch.fft.rfft(k, n=2*L) # (C H L)
-        u_f = torch.fft.rfft(u, n=2*L) # (B H L)
+            k = F.pad(k0, (0, Lk)) + F.pad(k1.flip(-1), (Lk, 0))
+               
+        # y = multiply_polynomials(u.unsqueeze(1), k.unsqueeze(0))[..., :L]  # (B 1 H L), (C 1 H Lk) -> (B C H L)
+        n = L + Lk
+        k_f = torch.fft.rfft(k, n=n)  # (C H ~n/2)
+        u_f = torch.fft.rfft(u, n=n)  # (B H ~n/2)
         y_f = contract('bhl,chl->bchl', u_f, k_f) # k_f.unsqueeze(-4) * u_f.unsqueeze(-3) # (B C H L)
-        y = torch.fft.irfft(y_f, n=2*L)[..., :L] # (B C H L)
-
+        y = torch.fft.irfft(y_f, n=n)[..., :L] # (B C H L)
+        
+        
         # Compute D term in state space equation - essentially a skip connection
         y = y + contract('bhl,ch->bchl', u, self.D) # u.unsqueeze(-3) * self.D.unsqueeze(-1)
 

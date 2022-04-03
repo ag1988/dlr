@@ -9,7 +9,7 @@ This repository is built on a fork of the official [S4 repo](https://github.com/
 ## Table of Contents
 - [Setup](#setup)
 - [DSS Experiments](#dss-experiments)
-- [S4 & Further Details](#s4)
+- [S4 & Further Details](#s4_)
 
 ## Setup <a name="setup"></a>
 
@@ -77,7 +77,7 @@ python -m train wandb=null model=dss experiment=s4-lra-imdb
 python -m train wandb=null model=dss experiment=s4-lra-aan
 python -m train wandb=null model=dss experiment=s4-lra-cifar trainer.max_epochs=200 train.seed=0
 python -m train wandb=null model=dss experiment=s4-lra-pathfinder scheduler.patience=13
-python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.lr.log_dt=0.0001 loader.batch_size=16
+python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.lr.log_dt=0.0001 loader.batch_size=16 trainer.max_epochs=35
 ```
 
 ### Speech Commands
@@ -88,18 +88,18 @@ The Speech Commands dataset modified as a [smaller](https://arxiv.org/abs/2005.0
 python -m train wandb=null model=dss experiment=s4-sc
 ```
 
-#### DSS: approximate test accuracy (at best validation checkpoint) & training time on single A100:
+#### DSS: test accuracy (at best validation checkpoint) & training time on single A100:
 |            | listops  | imdb |  aan  | lra-cifar | pathfinder | pathx |  sc  |
 | ---        |    ---   |  --- |  ---  |   ---     |    ---     |  ---  | ---  |
-| **acc**    | 58.2     | 76.3 |  87.8 | 85.7      | 84.6       | 85    | 97.7 |
-| **time**   | 2h       |  20m |  9h   |  6h       |  9h        |  36h  | 19h  |
+| **acc**    | 58.2     | 76.3 |  87.8 | 85.7      | 84.6       | 87.8  | 97.7 |
+| **time**   | 2h       |  20m |  9h   |  6h       |  9h        |  40h  | 19h  |
 
 These metrics can vary depending on GPU. On Path-X, loss should start decreasing around global step 90k (10h).
 
 #### Tuning
 You can directly tinker with hyperparameters via flags. E.g. 
 ```bash
-python -m train wandb=null model=dss experiment=s4-lra-cifar model.n_layers=6 model.layer.Lambda_init=randn model.layer.d_state=32 model.layer.bidirectional=true model.layer.sep_dt_re_im=false
+python -m train wandb=null model=dss experiment=s4-lra-cifar model.n_layers=6 model.layer.max_kernel_length=256 model.layer.Lambda_init=randn model.layer.d_state=32 model.layer.bidirectional=true model.layer.sep_dt_re_im=false
 ```
 
 #### Resuming from a checkpoint:
@@ -117,7 +117,7 @@ python -m train wandb=null model=dss experiment=s4-lra-pathx loader.batch_size=8
 Currently during grad accumulation, same kernel is computed for *every* sub-batch which is wasteful. Caching of kernels will be fixed in the future.
 
 
-## S4  <a name="s4"></a>
+## S4  <a name="s4_"></a>
 
 
 ## Table of Contents
