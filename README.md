@@ -19,6 +19,14 @@ After installing PyTorch, other packages can be installed via `pip install -r re
 
 If you'll only be using DSS, installing `pykeops` & the Cauchy kernels from [S4 repo](https://github.com/HazyResearch/state-spaces) is optional. But we strongly recommend following all installation instructions on S4 repo & installing these as they're required for S4.
 
+Note however that results reported in our paper can vary with the version of the installed libraries, especially Pytorch 1.11+. In case you're unable to reproduce our results using the above instructions, please create a new environment `dss` as follows and retry: 
+```bash
+conda deactivate
+conda env create -f conda-environment.yaml
+source activate dss
+```
+
+
 ### Data
 
 #### Datasets and Dataloaders
@@ -72,8 +80,8 @@ This can be run with `CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=ds
 ### Long Range Arena (LRA)
 
 ```bash
-python -m train wandb=null model=dss experiment=s4-lra-listops
-python -m train wandb=null model=dss experiment=s4-lra-imdb
+python -m train wandb=null model=dss experiment=s4-lra-listops model.layer.lr.log_dt=0.02
+python -m train wandb=null model=dss experiment=s4-lra-imdb model.layer.lr.log_dt=0.02
 python -m train wandb=null model=dss experiment=s4-lra-aan
 python -m train wandb=null model=dss experiment=s4-lra-cifar trainer.max_epochs=200 train.seed=0
 python -m train wandb=null model=dss experiment=s4-lra-pathfinder scheduler.patience=13
@@ -91,10 +99,11 @@ python -m train wandb=null model=dss experiment=s4-sc
 #### DSS: test accuracy (at best validation checkpoint) & training time on single A100:
 |            | listops  | imdb |  aan  | lra-cifar | pathfinder | pathx |  sc  |
 | ---        |    ---   |  --- |  ---  |   ---     |    ---     |  ---  | ---  |
-| **acc**    | 58.2     | 76.3 |  87.8 | 85.7      | 84.6       | 87.8  | 97.7 |
+| **acc**    | 60.6     | 84.8 |  87.8 | 85.7      | 84.6       | 87.8  | 97.7 |
 | **time**   | 2h       |  20m |  9h   |  6h       |  9h        |  40h  | 19h  |
 
-These metrics can vary depending on GPU. On Path-X, loss should start decreasing around global step 90k (10h).
+On Path-X, loss should start decreasing around global step 90k (10h).
+
 
 #### Tuning
 You can directly tinker with hyperparameters via flags. E.g. 

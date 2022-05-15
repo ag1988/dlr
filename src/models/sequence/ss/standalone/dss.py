@@ -217,20 +217,25 @@ class DSSKernel(OptimModule):
         self,
         H,
         N=64,
-        l_max=None,           # currently unused
+        l_max=None,             # currently unused
         channels=1,
         dt_min=1e-3,
         dt_max=1e-1,
-        trainable=None,       # Dictionary of options to train various DSS parameters
-        lr=None,              # Hook to set LR of DSS parameters differently
-        sep_dt_re_im=True,    # use separate deltas for real, imag parts of Lambda
+        trainable=None,         # Dictionary of options to train various DSS parameters
+        lr=None,                # Hook to set LR of DSS parameters differently
+        sep_dt_re_im=True,      # use separate deltas for real, imag parts of Lambda
         Lambda_init='hippo_skew_pos_imag',
-        epsilon=1e-7,         # avoids division by 0
+        epsilon=1e-7,           # avoids division by 0
+        version='softmax',      # DSS implementation to use
+        max_real_Lambda=1e-4,   # max real part of Lambda if version == 'clip'
+        **kwargs,               # sink
     ):
         super().__init__()
+        assert version in ['softmax', 'exp', 'exp-no-scale', 'clip', 'clip-no-scale']
+        self.version = version
         
         self.N, self.H, self.channels, self.sep_dt_re_im = N, H, channels, sep_dt_re_im
-        self.Lambda_init, self.epsilon = Lambda_init, epsilon
+        self.Lambda_init, self.epsilon, self.max_real_Lambda = Lambda_init, epsilon, max_real_Lambda
         
         # complex tensors are stored as real with an extra last dim of size 2 
         # to denote real, imag parts as ADAM moments are non-linear  
@@ -245,8 +250,15 @@ class DSSKernel(OptimModule):
             self.trainable.update(trainable)
         
         self.register("log_dt", log_dt, self.trainable.log_dt, self.lr.log_dt, wd=0.0)  # [H] or [H,2]
-        self.register("Lambda", Lambda, self.trainable.Lambda, self.lr.Lambda, wd=0.0)  # [N,2] 
-        self.register("W",      W,      self.trainable.W,      self.lr.W,      wd=0.0)  # [C H N]
+        
+        if 'exp' in version:
+            assert (Lambda[:,0] <= 0).all()
+            self.register("Lambda_log_neg_re", (-Lambda[:,0]).log(), self.trainable.Lambda, self.lr.Lambda, wd=0.0)
+            self.register("Lambda_im", Lambda[:,1], self.trainable.Lambda, self.lr.Lambda, wd=0.0)
+        else:
+            self.register("Lambda", Lambda, self.trainable.Lambda, self.lr.Lambda, wd=0.0)  # [N,2] 
+        
+        self.register("W", W, self.trainable.W, self.lr.W, wd=0.0)      # [C H N]
         
 
     def init(self, N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, Lambda_init):
@@ -268,6 +280,14 @@ class DSSKernel(OptimModule):
         return log_dt, Lambda, W 
     
     
+    def _Lambda(self):
+        if 'exp' in self.version:
+            return -self.Lambda_log_neg_re.exp() + 1j*self.Lambda_im                      # [N]
+        if 'clip' in self.version:
+            return self.Lambda[:,0].clip(max=self.max_real_Lambda) + 1j*self.Lambda[:,1]  # [N]
+        return _r2c(self.Lambda)
+    
+    
     def forward(self, L, state=None):
         '''TODO: 1. We're slower than S4 in some cases as in S4 effective N is N/2 due to conj symmetry. 
                     Explore how to do it here.
@@ -275,32 +295,39 @@ class DSSKernel(OptimModule):
         assert state is None, 'currently we dont support state'
         assert L >= 1
         
-        Lambda, W = map(_r2c, (self.Lambda, self.W))                     # [N], [C H N]
+        Lambda = self._Lambda()                                              # [N]
+        W = _r2c(self.W)                                                     # [C H N]
         
         if self.log_dt.ndim <= 1:
-            dt_Lambda = self.log_dt.exp().unsqueeze(-1) * Lambda         # [H N]
+            dt_Lambda = self.log_dt.exp().unsqueeze(-1) * Lambda             # [H N]
         else:
             # Lambda.real * dt0  +  1j * Lambda.imag * dt1
-            dt_Lambda = _r2c(self.log_dt.exp().unsqueeze(1)
-                             * self.Lambda.unsqueeze(0))                 # [H N]
+            dt_Lambda = _r2c(self.log_dt.exp().unsqueeze(1) 
+                             * _c2r(Lambda).unsqueeze(0))                    # [H N]
         
-        P = dt_Lambda.unsqueeze(-1) * torch.arange(L, device=W.device)   # [H N L]
+        P = dt_Lambda.unsqueeze(-1) * torch.arange(L, device=W.device)       # [H N L]
         
-        # fast softmax using structure of P
-        Lambda_gt_0 = Lambda.real > 0                                    # [N]
-        if Lambda_gt_0.any():
-            with torch.no_grad():
-                P_max = dt_Lambda * (Lambda_gt_0 * (L-1))                # [H N]
-            P = P - P_max.unsqueeze(-1)                                  # [H N L]
-        S = P.exp()                                                      # [H N L]
+        if self.version in ['softmax']:
+            # fast softmax using structure of P
+            Lambda_gt_0 = Lambda.real > 0                                    # [N]
+            if Lambda_gt_0.any():
+                with torch.no_grad():
+                    P_max = dt_Lambda * (Lambda_gt_0 * (L-1))                # [H N]
+                P = P - P_max.unsqueeze(-1)                                  # [H N L]
+            S = P.exp()                                                      # [H N L]
+
+            dt_Lambda_neg = dt_Lambda * (1 - 2*Lambda_gt_0)                  # [H N]
+            # 1 / S.sum(-1) == num / den
+            num = dt_Lambda_neg.exp() - 1                                    # [H N]
+            den = (dt_Lambda_neg * L).exp() - 1                              # [H N]
+            W = W * num * reciprocal(den * Lambda, self.epsilon)             # [C H N]
         
-        dt_Lambda_neg = dt_Lambda * (1 - 2*Lambda_gt_0)                  # [H N]
-        # S.sum(-1) == den / num
-        num = dt_Lambda_neg.exp() - 1                                    # [H N]
-        den = (dt_Lambda_neg * L).exp() - 1                              # [H N]
-        W = W * num * reciprocal(den * Lambda, self.epsilon)             # [C H N]
-        
-        return einsum('chn,hnl->chl', W, S).float(), state               # [C H L]
+        else:
+            S = P.exp()                                                      # [H N L]
+            if 'no-scale' not in self.version:
+                W = W * (dt_Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)  # [C H N]
+                
+        return einsum('chn,hnl->chl', W, S).float(), state                   # [C H L]
 
 
 class DSS(nn.Module):
@@ -309,17 +336,17 @@ class DSS(nn.Module):
             self,
             d_model,
             d_state=64,
-            l_max=1,        # currently unused
-            channels=1,     # maps 1-dim to C-dim
+            l_max=1,               # currently unused
+            channels=1,            # maps 1-dim to C-dim
             bidirectional=False,
             # Arguments for FF
-            activation='gelu', # activation in between SS and FF
-            postact=None, # activation after FF
-            initializer=None, # initializer on FF
-            weight_norm=False, # weight normalization on FF
-            hyper_act=None, # Use a "hypernetwork" multiplication
+            activation='gelu',     # activation in between SS and FF
+            postact=None,          # activation after FF
+            initializer=None,      # initializer on FF
+            weight_norm=False,     # weight normalization on FF
+            hyper_act=None,        # Use a "hypernetwork" multiplication
             dropout=0.0,
-            transposed=True, # axis ordering (B, L, D) or (B, D, L)
+            transposed=True,       # axis ordering (B, L, D) or (B, D, L)
             verbose=False,
             max_kernel_length=None,  # max len of SSM kernel to be used
             # SSM Kernel arguments
@@ -366,12 +393,12 @@ class DSS(nn.Module):
         # SSM Kernel
         self.max_kernel_length = max_kernel_length
         self.kernel = DSSKernel(self.h, self.n, l_max=l_max, channels=channels, **kernel_args)
-                
+        
         # Pointwise
         self.activation = Activation(activation)
         dropout_fn = nn.Dropout2d if self.transposed else nn.Dropout
         self.dropout = dropout_fn(dropout) if dropout > 0.0 else nn.Identity()
-
+        
         # position-wise output transform to mix features
         self.output_linear = LinearActivation(
             self.h*self.channels,

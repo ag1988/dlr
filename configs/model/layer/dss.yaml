@@ -18,5 +18,7 @@ lr:
 sep_dt_re_im: true
 max_kernel_length: null
 Lambda_init: hippo_skew_pos_imag
+version: softmax
+max_real_Lambda: 0.0001
 l_max: ${oc.select:dataset.__l_max,1} # Grab dataset length if exists, otherwise set to 1 and kernel will automatically resize
 verbose: false
