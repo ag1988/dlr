@@ -231,7 +231,7 @@ class DSSKernel(OptimModule):
         **kwargs,               # sink
     ):
         super().__init__()
-        assert version in ['softmax', 'exp', 'exp-no-scale', 'clip', 'clip-no-scale']
+        assert version in ['softmax', 'exp', 'exp-re-im', 'exp-no-scale', 'clip', 'clip-no-scale']
         self.version = version
         
         self.N, self.H, self.channels, self.sep_dt_re_im = N, H, channels, sep_dt_re_im
@@ -254,12 +254,15 @@ class DSSKernel(OptimModule):
         if 'exp' in version:
             assert (Lambda[:,0] <= 0).all()
             self.register("Lambda_log_neg_re", (-Lambda[:,0]).log(), self.trainable.Lambda, self.lr.Lambda, wd=0.0)
-            self.register("Lambda_im", Lambda[:,1], self.trainable.Lambda, self.lr.Lambda, wd=0.0)
+            if 'im' in version:
+                self.register("Lambda_log_im", Lambda[:,1].log(), self.trainable.Lambda, self.lr.Lambda, wd=0.0)
+            else:
+                self.register("Lambda_im", Lambda[:,1], self.trainable.Lambda, self.lr.Lambda, wd=0.0)
         else:
             self.register("Lambda", Lambda, self.trainable.Lambda, self.lr.Lambda, wd=0.0)  # [N,2] 
         
         self.register("W", W, self.trainable.W, self.lr.W, wd=0.0)      # [C H N]
-        
+
 
     def init(self, N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, Lambda_init):
         if Lambda_init == 'hippo_skew_pos_imag':
@@ -282,6 +285,8 @@ class DSSKernel(OptimModule):
     
     def _Lambda(self):
         if 'exp' in self.version:
+            if 'im' in self.version:
+                return -self.Lambda_log_neg_re.exp() + 1j*self.Lambda_log_im.exp()        # [N]
             return -self.Lambda_log_neg_re.exp() + 1j*self.Lambda_im                      # [N]
         if 'clip' in self.version:
             return self.Lambda[:,0].clip(max=self.max_real_Lambda) + 1j*self.Lambda[:,1]  # [N]
