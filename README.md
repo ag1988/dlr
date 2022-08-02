@@ -3,7 +3,7 @@
 This repository is built on a fork of the official [S4 repo](https://github.com/HazyResearch/state-spaces) & contains the accompanying code for the paper:
 
 > **Diagonal State Spaces are as Effective as Structured State Spaces**\
-> Ankit Gupta\
+> Ankit Gupta, Albert Gu, Jonathan Berant\
 > Paper: https://arxiv.org/pdf/2203.14343
 
 ## Table of Contents
