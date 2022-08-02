@@ -3,21 +3,60 @@ Dataloader for stock forecasting.
 Modified from https://github.com/zhouhaoyi/Informer2020
 """
 
-from typing import List
 import os
 import glob
 import numpy as np
 import pandas as pd
-from pandas.tseries import offsets
-import torch
-from torch.utils import data
-from torch.utils.data import Dataset, ConcatDataset, DataLoader
 from tqdm import tqdm
+
+import torch
+from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
 import warnings
 warnings.filterwarnings("ignore")
 
 from src.dataloaders.datasets import SequenceDataset, default_data_path
+
+
+def load_raw_data(root_path, max_num_stocks=-1):
+    """ root_path: path to dir containing cleaned .csv's
+        returns a list of df's
+    """
+    files = sorted(glob.glob(f'{root_path}/*.csv'))
+    files = files[:max_num_stocks] if max_num_stocks > 0 else files
+    dfs_raw = []
+    
+    pbar = tqdm(files)
+    for file_path in pbar:
+        df_raw = pd.read_csv(file_path)
+        assert not df_raw.isnull().any().any(), 'data should already be imputed'
+        dfs_raw.append(df_raw)
+        pbar.set_description(f'{os.path.basename(file_path)}')
+    
+    assert len(dfs_raw)
+    return dfs_raw
+
+
+def cutoff_dates(all_dates, split_sizes=[0.9,.05,.05]):
+    """ Determines dates for a temporal split according to split_sizes.
+        all_dates: list of dataframes with a 'date' column.
+        returns date ranges for train, val, test.
+    """
+    all_dates = pd.concat(all_dates)
+    all_dates['date'] = pd.to_datetime(all_dates['date'])
+    all_dates.sort_values(by=['date'], inplace=True, ascending=True)
+    all_dates.reset_index(drop=True, inplace=True)
+    n = len(all_dates)
+    # train - val - test
+    train_start = 0
+    train_end = val_start = train_start + int(n * split_sizes[0])  # excl                           
+    val_end = test_start = val_start + int(n * split_sizes[1])
+    test_end = min(test_start + int(n * split_sizes[2]), n-1)
+
+    date_start = [all_dates.date.iloc[idx] for idx in [train_start, val_start, test_start]]
+    date_end = [all_dates.date.iloc[idx] for idx in [train_end, val_end, test_end]]
+
+    return date_start, date_end
 
 
 def time_features(dates, freq="t"):
@@ -89,81 +128,75 @@ class StandardScaler:
 class StockDataset(Dataset):
     def __init__(
         self,
-        file_path,
+        cutoffs,                     # datetime ranges (temporal split)
         flag="train",                # data split
         size=None,                   # [context_len, pred_len]            
         target="close",
-        scale=True,
         mode='diff',                 # instead of predicting target, forecast difference from most recent target
         freq="t",
         cols=['year', 'month', 'day', 'weekday', 'hour', 'minute', 
-              'high', 'low', 'open', 'close', 'volume'], # numeric features used for prediction
+              'high', 'low', 'open', 'close', 'volume', 'return'], # numeric features used for prediction
     ):
         # size [seq_len, pred_len]
-        # info
         if size == None:
-            self.seq_len = 128-7
+            self.seq_len = 512-7
             self.pred_len = 7
         else:
             self.seq_len = size[0]
             self.pred_len = size[-1]
+        
         type_map = {"train": 0, "val": 1, "test": 2}
         self.set_type = type_map[flag]
         
+        self.cutoffs = cutoffs     
         self.target = target
-        self.scale = scale
+        self.mode = mode
         self.freq = freq
         self.cols = cols
-        self.mode = mode
-        self.file_path = file_path
-        self.__read_data__()
-
-    def _borders(self, df_raw):
-        num_train = int(len(df_raw) * 0.9)
-        num_test = int(len(df_raw) * 0.05)
-        num_val = len(df_raw) - num_train - num_test
-        # temporal split : [train, val, test]
-        start_idx = [0,         num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
-        end_idx =   [num_train, num_train + num_val,      len(df_raw)]
-        return start_idx, end_idx
-
-    def _process_columns(self, df_raw):
+    
+    def process_columns(self, df_raw):
+        # some other targets that might generalize better
+        close = df_raw['close']
+        prev_close = close.shift()
+        df_raw['return'] = (close - prev_close) / prev_close.clip(lower=1e-4)
+        df_raw = df_raw.dropna(inplace=True)
+        
+        # incude time info
+        df_time = time_features(df_raw[["date"]].copy(), freq=self.freq)
+        df_raw = pd.concat([df_raw, df_time], axis=1)
+                
         # select features
         cols = self.cols.copy()
         cols.remove(self.target)
         return df_raw[cols + [self.target]]
     
-    def __read_data__(self):
-        df_raw = pd.read_csv(self.file_path)
-        assert not df_raw.isnull().any().any(), 'data should already be imputed'
+    def borders(self, df):
+        start_date, end_date = self.cutoffs
+        num_train, num_val, num_test = [
+            pd.to_datetime(df['date']).between(start_date[i], end_date[i], inclusive='left').sum() 
+            for i in range(3)
+        ]
+        # temporal split : [train, val, test]
+        start_idx = [0,         num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
+        end_idx =   [num_train, num_train + num_val,      len(df_raw)]
+        return start_idx, end_idx
+    
+    def get_split_data(self, df, set_type=0):
+        border1s, border2s = self.borders(df)
+        border1 = border1s[set_type]    # split start 
+        border2 = border2s[set_type]    # split end
+        return df[border1 : border2]
         
-        # some other targets that might generalize better
-        close = df_raw['close']
-        prev_close = close.shift()
-        df_raw['return'] = (close - prev_close) / prev_close.clip(lower=1e-4)
-        df_raw.dropna(inplace=True)
+    def prepare_data(self, df, scalar=None):
+        df_split = self.get_split_data(df, self.set_type)
         
-        df_time = time_features(df_raw[["date"]].copy(), freq=self.freq)
-        df_raw = pd.concat([df_raw, df_time], axis=1)
-                
-        # select features
-        df_data = self._process_columns(df_raw)
-        
-        border1s, border2s = self._borders(df_raw)
-        border1 = border1s[self.set_type]    # split start 
-        border2 = border2s[self.set_type]    # split end
-        
-        # each stock normalized independenly
-        self.scaler = StandardScaler()
-        if self.scale:
-            train_data = df_data[border1s[0] : border2s[0]]
-            self.scaler.fit(train_data.values)
-            data = self.scaler.transform(df_data.values)
+        if scaler is not None:
+            data = scaler.transform(df_split.values)
         else:
-            data = df_data.values
+            data = df_split.values
         
-        self.data_x = data[border1:border2]        # input
-        self.data_y = data[border1:border2, -1:]   # target
+        self.data_x = data           # input
+        self.data_y = data[:, -1:]   # target : rightmost col
 
     def __getitem__(self, index):
         # seq_x: sb -----sl----------- se 0 ---pl--- 0
@@ -192,8 +225,8 @@ class StockDataset(Dataset):
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
+    def inverse_transform(self, data, scalar):
+        return scaler.inverse_transform(data)
 
     @property
     def d_input(self):
@@ -203,25 +236,33 @@ class StockDataset(Dataset):
     def d_output(self):
         return self.data_y.shape[-1]
 
-
+    
 class StocksDataset(ConcatDataset):
-    def __init__(self, root_path, max_num_stocks=None, **kwargs):
+    def __init__(self, dfs_raw, **kwargs):
         split = kwargs['flag']
-        datasets = []
-        pbar = tqdm(sorted(glob.glob(f'{root_path}/*.csv')))
         
-        for file_path in pbar:
+        # determine datetime ranges for a temporal data split
+        cutoffs = cutoff_dates([dfs_raw[['date']] for df in dfs_raw])
+        
+        # add additional features
+        stock = StockDataset(cutoffs, **kwargs)
+        dfs_raw = list(map(stock.process_columns, dfs_raw))
+        
+        # train a scalar
+        train_data = pd.concat([stock.get_split_data(df, 0) for df in dfs_raw])
+        scaler = StandardScaler()
+        scaler.fit(train_data.values)
+        
+        datasets = []
+        for df in tqdm(dfs_raw, desc=f"{split}"):
             try:
-                ds = StockDataset(file_path, **kwargs)
+                ds = StockDataset(cutoffs, **kwargs)
+                ds.prepare_data(df, scalar)
                 if not len(ds): continue
             except ValueError:
                 continue
-            datasets.append(ds)
-            pbar.set_description(f'{split} : {os.path.basename(file_path)}')
-            
-            if max_num_stocks > 0 and len(datasets) >= max_num_stocks:
-                break
-            # in rare cases its possible a stock can appear in train but not in test
+            datasets.append(ds)  
+            # note: its possible a stock can appear in train but not in test
         
         super().__init__(datasets)
         print(f'\n {split} set size : {len(self)} \n'.upper())
@@ -255,9 +296,11 @@ class StocksSequenceDataset(SequenceDataset):
 
     def setup(self):
         
+        # load cleaned data
+        dfs_raw = load_raw_data(self.data_dir, self.max_num_stocks)
+        
         self.dataset_train = self._dataset_cls(
-            root_path=self.data_dir,
-            max_num_stocks=self.max_num_stocks,
+            dfs_raw,
             flag="train",
             size=self.size,
             target=self.target,
@@ -268,8 +311,7 @@ class StocksSequenceDataset(SequenceDataset):
         )
 
         self.dataset_val = self._dataset_cls(
-            root_path=self.data_dir,
-            max_num_stocks=self.max_num_stocks,
+            dfs_raw,
             flag="val",
             size=self.size,
             target=self.target,
@@ -280,8 +322,7 @@ class StocksSequenceDataset(SequenceDataset):
         )
 
         self.dataset_test = self._dataset_cls(
-            root_path=self.data_dir,
-            max_num_stocks=self.max_num_stocks,
+            dfs_raw,
             flag="test",
             size=self.size,
             target=self.target,
@@ -301,9 +342,9 @@ class StocksDayForecast(StocksSequenceDataset):
         "data_dir": default_data_path / 'stock' / 'day',
         "max_num_stocks": -1,
         "size": [512-7],   # next 7d forecast based on past 505d
-        "target": "close", # 'return'
+        "target": "close",
         "scale": True,
-        "mode": 'diff',    # ''
+        "mode": 'diff',
         "freq": "t",
         "cols": ['year', 'month', 'day', 'weekday', 'high', 'low', 'open', 'close', 'volume', 'return'],
     }
@@ -322,8 +363,7 @@ class StocksDayForecast(StocksSequenceDataset):
 #         "scale": True,
 #         "mode": 'diff',
 #         "freq": "t,
-#         "cols": ['year', 'month', 'day', 'weekday', 'hour',
-#                  'high', 'low', 'open', 'close', 'volume']
+#         "cols": ['high', 'close', 'volume', 'open', 'low', 'change']
 #     }
 
 
@@ -335,7 +375,7 @@ class StocksDayForecast(StocksSequenceDataset):
 #     init_defaults = {
 #         "data_dir": default_data_path / 'stock' / 'minute',
 #         "max_num_stocks": -1,
-#         "size": [256-15, 15],   # next 15x2m forecast
+#         "size": [512-15, 15],   # next 15x2m forecast
 #         "target": "close", 
 #         "scale": True,
 #         "mode": 'diff',
@@ -344,3 +384,6 @@ class StocksDayForecast(StocksSequenceDataset):
 #                  'high', 'low', 'open', 'close', 'volume']
 #     }
 
+
+
+# CUDA_VISIBLE_DEVICES=0 python -m train wandb=null experiment=s4-stocks-day dataset.max_num_stocks=100 dataset.target='close'
