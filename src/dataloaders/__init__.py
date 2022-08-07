@@ -1,2 +1,2 @@
 from .datasets import SequenceDataset
-from . import lm, et
+from . import lm, et, stocks
