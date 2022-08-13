@@ -69,6 +69,8 @@ class SequenceDataset:
         self.dataset_train = None
         self.dataset_val = None
         self.dataset_test = None
+        
+        self.shuffle_train = True
 
     def init(self):
         pass
@@ -124,11 +126,13 @@ class SequenceDataset:
         if not is_list(train_resolution):
             train_resolution = [train_resolution]
         assert len(train_resolution) == 1, "Only one train resolution supported for now"
-
+        
+        if "shuffle" not in kwargs and self.shuffle_train is not None:
+            kwargs["shuffle"] = self.shuffle_train
         return self._dataloader(
             self.dataset_train,
             resolutions=train_resolution,
-            shuffle=True,
+            # shuffle=True,
             **kwargs,
         )[0]
 
@@ -148,7 +152,7 @@ class SequenceDataset:
         dataloaders = self._dataloader(
             dataset,
             resolutions=eval_resolutions,
-            # shuffle=False,
+            # shuffle=False, 
             **kwargs,
         )
 
@@ -233,6 +237,7 @@ class BIDMC(SequenceDataset):
         split = "reshuffle" if self.reshuffle else "original"
         return f"BIDMC{self.target}_{split}"
 
+    
 class MNIST(SequenceDataset):
     _name_ = "mnist"
     d_input = 1
@@ -584,9 +589,9 @@ class Capacity(SequenceDataset):
     @property
     def init_defaults(self):
         return {
-            "inp_length": 1000,        # input length
-            "n_memorize": 100,         # number of tokens to memorize
-            "n_samples": 50000,
+            "inp_length": 1024,        # input length
+            "n_memorize": 100,         # number of shifts
+            "samples_per_epoch": 1600,
             "val_split": 0.1,
         }
 
@@ -603,15 +608,20 @@ class Capacity(SequenceDataset):
         return self.inp_length
 
     def setup(self):
-        from .capacity import capacity_static_dataset
+        from .capacity import CapacityTrainDataset
 
-        self.dataset_train = capacity_static_dataset(
+        self.dataset_train = CapacityTrainDataset(
             self.inp_length,
             self.n_memorize,
-            self.n_samples,
+            int(self.samples_per_epoch*(1-self.val_split)),
         )
         self.dataset_test = None
-        self.split_train_val(self.val_split)
+        self.dataset_val = CapacityTrainDataset(
+            self.inp_length,
+            self.n_memorize,
+            int(self.samples_per_epoch*self.val_split)
+        )
+        self.shuffle_train = None  # IterableDataset doesn't accept "shuffle" 
 
     def __str__(self):
         return f"{self._name_}{self.inp_length}{self.n_memorize}"

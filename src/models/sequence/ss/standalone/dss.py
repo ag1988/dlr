@@ -22,11 +22,15 @@ from omegaconf import DictConfig
 
 
 try:
+    import pykeops
     from pykeops.torch import LazyTensor
+    pykeops.set_verbose(False)
     has_pykeops = True
+    
 except ImportError:
     has_pykeops = False
 
+# has_pykeops = False
 
 def get_logger(name=__name__, level=logging.INFO) -> logging.Logger:
     """Initializes multi-GPU-friendly python logger."""
@@ -244,7 +248,7 @@ class DSSKernel(OptimModule):
         super().__init__()
         assert version in ['softmax', 'exp', 'exp-re-im', 'exp-no-scale', 'clip', 'clip-no-scale']
         self.version = version
-        
+                
         self.N, self.H, self.channels, self.sep_dt_re_im, self.kernel_to_real = N, H, channels, sep_dt_re_im, kernel_to_real
         self.Lambda_init, self.epsilon, self.max_real_Lambda = Lambda_init, epsilon, max_real_Lambda
         
@@ -305,14 +309,14 @@ class DSSKernel(OptimModule):
     
     
     def forward(self, L, state=None):
-        '''TODO: 1. We're slower than S4 in some cases as in S4 effective N is N/2 due to conj symmetry. 
-                    Explore how to do it here.
+        '''Native pytorch and pykeops implementations are equivalent, latter is mem efficient.
         '''
         assert state is None, 'currently we dont support state'
         assert L >= 1
         
         Lambda = self._Lambda()                                              # [N]
         W = _r2c(self.W)                                                     # [C H N]
+        pos = torch.arange(L, device=W.device)                               # [L]
         
         if self.log_dt.ndim <= 1:
             dt_Lambda = self.log_dt.exp().unsqueeze(-1) * Lambda             # [H N]
@@ -320,32 +324,61 @@ class DSSKernel(OptimModule):
             # Lambda.real * dt0  +  1j * Lambda.imag * dt1
             dt_Lambda = _r2c(self.log_dt.exp().unsqueeze(1) 
                              * _c2r(Lambda).unsqueeze(0))                    # [H N]
-        
-        P = dt_Lambda.unsqueeze(-1) * torch.arange(L, device=W.device)       # [H N L]
-        
+                
+        P_max = None
         if self.version in ['softmax']:
-            # fast softmax using structure of P
-            Lambda_gt_0 = Lambda.real > 0                                    # [N]
+            Lambda_gt_0 = Lambda.real > 0                                    # [N]    
             if Lambda_gt_0.any():
                 with torch.no_grad():
-                    P_max = dt_Lambda * (Lambda_gt_0 * (L-1))                # [H N]
-                P = P - P_max.unsqueeze(-1)                                  # [H N L]
-            S = P.exp()                                                      # [H N L]
-
+                    P_max = (dt_Lambda * (Lambda_gt_0 * (L-1)))              # [H N]
+            
             dt_Lambda_neg = dt_Lambda * (1 - 2*Lambda_gt_0)                  # [H N]
             # 1 / S.sum(-1) == num / den
             num = dt_Lambda_neg.exp() - 1                                    # [H N]
             den = (dt_Lambda_neg * L).exp() - 1                              # [H N]
             W = W * num * reciprocal(den * Lambda, self.epsilon)             # [C H N]
         
-        else:
-            S = P.exp()                                                      # [H N L]
-            if 'no-scale' not in self.version:
-                W = W * (dt_Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)  # [C H N]
+        elif 'no-scale' not in self.version:  # exp
+            W = W * (dt_Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)   # [C H N]
         
-        K = einsum('chn,hnl->chl', W, S)
+        # else exp-no-scale
+        
+        # has_pykeops = False
+        if not has_pykeops:
+            P = dt_Lambda.unsqueeze(-1) * pos                                # [H N L]
+            if P_max is not None:
+                P = P - P_max.unsqueeze(-1)                                  # [H N L]
+            K = einsum('chn,hnl->chl', W, P.exp())
+        else:
+            K = self.kernel_pykeops(W, dt_Lambda, pos.float(), P_max)    
+            
         return self.cast_kernel(K, self.kernel_to_real), state               # [C H L]
     
+    def kernel_pykeops(self, w, l, p, m=None):    
+        ''' w: [C H N]  l: [H N]  p: [L]  m: [H N]
+            einsum('chn,hnl->chl', w, (l.view(H,N,1) * p.view(1,1,L) - m.view(H,N,1)).exp())
+        '''
+        def _broadcast_dims(*tensors):
+            max_dim = max([tensor.ndim for tensor in tensors if tensor is not None])
+            tensors = [tensor.view((1,)*(max_dim-len(tensor.shape))+tensor.shape) 
+                       if tensor is not None else None
+                       for tensor in tensors]
+            return tensors
+        
+        w, l, p, m = _broadcast_dims(w, l, p, m)              # [C H N] [1 H N] [1 1 L] [1 H N]   
+        # suffix _l => never explicitly realized
+        w_l = LazyTensor(rearrange(w, '... N -> ... N 1 1'))  # [C H N 1 1]
+        l_l = LazyTensor(rearrange(l, '... N -> ... N 1 1'))  # [1 H N 1 1]
+        p_l = LazyTensor(rearrange(p, '... L -> ... 1 L 1'))  # [1 1 1 L 1]
+        m_l = (LazyTensor(rearrange(m, '... N -> ... N 1 1')) 
+               if m is not None else None)                    # [1 H N 1 1]
+        
+        lp_l = l_l * p_l                                      # [1 H N L 1]
+        if m is not None:
+            lp_l = lp_l - m_l
+        k = (w_l * lp_l.exp()).sum(dim=len(w_l.shape)-2)      # [C H N L 1] -> [C H L 1]
+        return k.squeeze(-1)                                  # [C H L]
+        
     @staticmethod
     def cast_kernel(K, kernel_to_real):
         if kernel_to_real == 'imag':
@@ -368,30 +401,31 @@ class DLRKernel(OptimModule):
     def __init__(
         self,
         H,
-        N=2**11,
+        N=2**12,
         l_max=None,             # currently unused
         channels=1,
         trainable=None,         # Dictionary of options to train various parameters
         lr=None,                # Hook to set LR of parameters differently
         version='Lambda_imag_W_real',
         Lambda_init='omega',
-        W_scale = 1e-5,  
+        W_scale=None,           # default 1/N
         pykeops=True,           # use pykeops implementation
         kernel_to_real='prod',  # cast complex kernel to real
         **kwargs,               # sink
     ):
         super().__init__()
         self.version = version
-        
+        assert version in ['Lambda_imag_W_real', 'Lambda_imag', '']
         self.N, self.H, self.channels = N, H, channels
-        self.Lambda_init, self.W_scale = Lambda_init, W_scale
+        self.Lambda_init = Lambda_init
+        self.W_scale = 1/N if W_scale is None else W_scale
         self.kernel_to_real, self.pykeops = kernel_to_real, pykeops
         
         # complex tensors are stored as real with an extra last dim of size 2 
         # to denote real, imag parts as ADAM moments are non-linear  
-        Lambda, W = self.init(N, H, channels, l_max, Lambda_init, W_scale)  # [N,2], [H N] 
+        Lambda, W = self.init(N, H, channels, l_max, Lambda_init, self.W_scale)  # [N,2], [H N] 
         
-        self.lr = DictConfig({"Lambda": 1e-4, "W": 1e-4})
+        self.lr = DictConfig({"Lambda": 5e-5, "W": 5e-5})
         if lr is not None:
             self.lr.update(lr)
         
@@ -402,7 +436,7 @@ class DLRKernel(OptimModule):
         self.register("Lambda_im", Lambda[:,1], self.trainable.Lambda, self.lr.Lambda, wd=0.0)
         if 'Lambda_imag' not in self.version:
             self.register("Lambda_log_neg_re", (-Lambda[:,0]).log(), self.trainable.Lambda, self.lr.Lambda, wd=0.0)
-        self.register("W", W, self.trainable.W, self.lr.W)#, wd=0.0)    # [C H N]
+        self.register("W", W, self.trainable.W, self.lr.W, wd=0.0)    # [C H N *]
 
     def init(self, N, H, channels, l_max, Lambda_init, W_scale):
         if Lambda_init == 'omega':
@@ -419,7 +453,7 @@ class DLRKernel(OptimModule):
         return Lambda, W
     
     def get_params(self):
-        if 'Lambda_im' in self.version:
+        if 'Lambda_imag' in self.version:
             Lambda = self.Lambda_im*1j
         else:
             Lambda = -self.Lambda_log_neg_re.exp() + self.Lambda_im*1j
@@ -430,51 +464,36 @@ class DLRKernel(OptimModule):
             W  = _r2c(self.W)
         return Lambda, W       # [N], [C H N]
     
-    def kernel_pykeops_c(self, Lambda, W, L):
-        # Lambda: [N]   W: [C H N 2]   out: [C H L 2]
-        assert has_pykeops, 'pip install pykeops'
+    def kernel_pykeops(self, W, Lambda, L):
+        # W: [C H N]  Lambda: [N]
+        assert has_pykeops
         
-        reverse_dims = lambda x: x.permute(*torch.arange(-1,-x.ndim-1,-1, device=x.device))
-        Lambda = Lambda.view(1,-1,1).contiguous()        # [1 N 1]
-        W = reverse_dims(W)                              # [2 N H C]
-        assert W.shape[1] == Lambda.shape[-2]
-        W_shape = W.shape[2:]                            # [H C]
-        W = W.view(W.shape[:2]+(-1,)).contiguous()       # [2 N HC]
+        def _broadcast_dims(*tensors):
+            max_dim = max([tensor.ndim for tensor in tensors])
+            tensors = [tensor.view((1,)*(max_dim-len(tensor.shape))+tensor.shape) for tensor in tensors]
+            return tensors
         
-        pos = torch.arange(L, dtype=torch.float, device=Lambda.device).view(-1,1,1)
-        Lambda, pos = map(LazyTensor, (Lambda, pos))     # [1 N 1], [L 1 1]
-        # extra last dim req by pykeops
-
-        S = (pos * Lambda).exp()                         # not explicitly produced
-        S_re, S_im = S.real, S.imag
-        K_re = S_re @ W[0] - S_im @ W[1]                 # [L HC] 
-        K_im = S_re @ W[1] + S_im @ W[0]                 # [L HC]     
-        K = torch.stack((K_re, K_im), dim=0).view((2,L,) + W_shape)  # [2 L H C] 
-        return reverse_dims(K)                           # [C H L 2]    
+        pos = torch.arange(L, device=W.device, dtype=torch.float)
+        
+        v, x, l = _broadcast_dims(W, Lambda, pos)                 # [C H N] [1 1 N] [1 1 L]   
+        v_l = LazyTensor(rearrange(v, '... N -> ... N 1 1'))      # [C H N 1 1]
+        x_l = LazyTensor(rearrange(x, '... N -> ... N 1 1'))      # [1 1 N 1 1]
+        l_l = LazyTensor(rearrange(l, '... L -> ... 1 L 1'))      # [1 1 1 L 1]
+        
+        if self.version == 'Lambda_imag_W_real':
+            assert all(map(torch.is_floating_point, (W, Lambda)))
+            P = x_l * l_l                                         # symbolic [1 1 N L]
+            S = P.cos().concat(P.sin())                           # symbolic [1 1 N L 2]
+            K = (v_l * S).sum(dim=len(v_l.shape)-2)               # [C H N L 2]->[C H L 2]
+        else:
+            assert not Lambda.is_floating_point()
+            S = (x_l * l_l).exp()                                 # symbolic [1 H N L 1]
+            K = (v_l * S).sum(dim=len(v_l.shape)-2)               # [C H N L 1]->[C H L 1]
+            K = _c2r(K.squeeze(-1))
+        assert K.ndim == 4 and K.shape[-1] == 2
+        return K                                                  # [C H L 2]
     
-    def kernel_pykeops_r(self, Lambda, W, L):
-        # Lambda: [N]   W: [C H N]   out: [C H L 2]
-        assert has_pykeops, 'pip install pykeops'
-        assert self.version == 'Lambda_imag_W_real'
-        
-        reverse_dims = lambda x: x.permute(*torch.arange(-1,-x.ndim-1,-1, device=x.device))
-        Lambda = Lambda.view(1,-1,1).contiguous()        # [1 N 1]
-        W = reverse_dims(W)                              # [N H C]
-        assert W.shape[0] == Lambda.shape[-2]
-        W_shape = W.shape[1:]                            # [H C]
-        W = W.view(W.shape[0], -1).contiguous()          # [N HC]
-        
-        pos = torch.arange(L, dtype=Lambda.dtype, device=Lambda.device).view(-1,1,1)
-        Lambda, pos = map(LazyTensor, (Lambda, pos))     # [1 N 1], [L 1 1]
-        # extra last dim req by pykeops
-
-        P = pos * Lambda                                 # symbolic [L N] 
-        K_re = P.cos() @ W                               # [L HC] 
-        K_im = P.sin() @ W                               # [L HC] 
-        K = torch.stack((K_re, K_im), dim=0).view((2,L,) + W_shape)  # [2 L H C] 
-        return reverse_dims(K)                           # [C H L 2]
-    
-    def kernel(self, Lambda, W, L):
+    def kernel(self, W, Lambda, L):
         # [N], [C H N]
         S = (Lambda.unsqueeze(-1) * torch.arange(L, device=W.device)).exp()  # [N L]
         if self.version == 'Lambda_imag_W_real':
@@ -483,11 +502,11 @@ class DLRKernel(OptimModule):
     
     def forward(self, L, state=None):
         if self.version == 'Lambda_imag_W_real' and self.pykeops:
-            K = self.kernel_pykeops_r(self.Lambda_im, self.W, L)       # [C H L 2]
+            K = self.kernel_pykeops(self.W, self.Lambda_im, L)         # [C H L 2]
         else:
             Lambda, W = self.get_params()                              # [N], [C H N]
-            K = self.kernel_pykeops_c(Lambda, self.W, L=L)             # [C H L 2]
-            # K = self.kernel(Lambda, W, L=L)                          # [C H L 2]
+            K = self.kernel_pykeops(self.W, Lambda, L=L)               # [C H L 2]
+            # K = self.kernel(W, Lambda, L=L)                          # [C H L 2]
         return self.cast_kernel(K, self.kernel_to_real), state         # [C H L]
     
     @staticmethod
@@ -600,7 +619,7 @@ class DSS(nn.Module):
         """
         if not self.transposed: u = u.transpose(-1, -2)
         L = u.size(-1)
-
+        
         # Compute SS Kernel
         Lk = L if not self.max_kernel_length else min(self.max_kernel_length, L)
         k, _ = self.kernel(L=Lk)  # (C H Lk) (B C H Lk)

@@ -105,7 +105,7 @@ class SequenceResidualBlock(SequenceModule):
 
     def step(self, x, state, *args, **kwargs): # TODO needs fix for transpose logic
         y = x
-
+        
         # Pre-norm
         if self.norm is not None and self.prenorm:
             if self.transposed: y = y.unsqueeze(-1)

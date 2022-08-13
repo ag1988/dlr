@@ -43,6 +43,7 @@ except:
 
 try:
     import pykeops
+    pykeops.set_verbose(False)
     from src.models.functional.cauchy import cauchy_conj
     has_pykeops = True
 except ImportError:

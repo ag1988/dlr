@@ -89,6 +89,7 @@ class SequenceModel(SequenceModule):
 
     def forward(self, inputs, *args, state=None, **kwargs):
         """ Inputs assumed to be (batch, sequence, dim) """
+        
         # Debug
         if self.verbose and not self._forward:
             print("Model: unused kwargs", kwargs)
@@ -108,7 +109,8 @@ class SequenceModel(SequenceModule):
             outputs, state = layer(outputs, *args, state=prev_state, **kwargs) # TODO handle state
             next_states.append(state)
             if self.track_norms: output_norms.append(torch.mean(outputs.detach() ** 2))
-        outputs = self.norm(outputs)
+        
+        if self.norm is not None: outputs = self.norm(outputs)
 
         if self.transposed: outputs = rearrange(outputs, 'b d l -> b l d')
 

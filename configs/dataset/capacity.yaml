@@ -1,8 +1,8 @@
 # @package _global_
 dataset:
   _name_: capacity
-  inp_length: 10000
+  inp_length: 8192
   n_memorize: 8
-  n_samples: 10000
+  samples_per_epochs: 8192
   val_split: 0.1
   __l_max: ${.inp_length}

@@ -4,25 +4,30 @@ defaults:
   - /model: dss
 
 dataset:
-  inp_length: 10000
+  inp_length: 8192
   n_memorize: 8
-  n_samples: 1000
-
+  samples_per_epoch: 16000
+  val_split: 0.1
+  
 model:
   dropout: 0.0
   n_layers: 1
   prenorm: true
-  d_model: 64
+  d_model: 16
   norm: layer
+  layer:
+    activation: gelu
+    postact: null
 
 optimizer:
-  lr: 0.001
+  lr: 0.00005
 
 loader:
-  batch_size: 20
+  batch_size: 16
+  num_workers: 4
 
 trainer:
-  max_epochs: 5000
+  max_epochs: 30
 
 train:
   seed: 1112
