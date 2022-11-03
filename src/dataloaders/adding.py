@@ -7,7 +7,6 @@ import numpy as np
 
 def torch_adding_data(L, batch_shape=()):
     assert L >= 2
-    # tokens = torch.randint(low=1, high=A-1, size=batch_shape+(M,))
     mid = L//2
     idx0 = torch.randint(low=0, high=mid, size=batch_shape)
     idx1 = torch.randint(low=0, high=L-mid, size=batch_shape)
@@ -20,6 +19,7 @@ def torch_adding_data(L, batch_shape=()):
     y = torch.sum(unif*idx, dim=-1, keepdim=True) # (batch_shape, 1)
 
     return x, y
+
 
 def adding_static_dataset(L, samples):
     all_x, all_y = torch_adding_data(L, batch_shape=(samples,))

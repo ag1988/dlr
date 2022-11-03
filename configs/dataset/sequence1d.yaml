@@ -1,0 +1,14 @@
+_name_: sequence1d
+samples_per_epoch: 16000
+val_split: 0.1
+L: 512
+task: cumsum
+D: 4                # mips: query/key/val dim
+causal: True        # mips: only prev keys matched
+M: 32               # masked_select: num tokens to copy
+variable: True      # masked_select: vary positions to copy across batches
+consecutive: False  # masked_select: use consecutive positions to copy
+num_shifts: 8       # shift task
+__l_max: ${.L}
+
+            

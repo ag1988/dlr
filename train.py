@@ -1,3 +1,4 @@
+import os, shutil
 from typing import List, Optional, Callable
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from src.tasks import encoders, decoders, tasks
 import src.models.nn.utils as U
 from src.dataloaders import SequenceDataset  # TODO make registry
 from tqdm.auto import tqdm
+from copy import deepcopy
 
 log = src.utils.train.get_logger(__name__)
 
@@ -93,7 +95,7 @@ class SequenceLightningModule(pl.LightningModule):
         self.decoder = U.TupleSequential(decoder, task.decoder)
         self.loss = task.loss
         self.metrics = task.metrics
-
+        
         # Handle state logic
         self._initialize_state()
 
@@ -212,12 +214,12 @@ class SequenceLightningModule(pl.LightningModule):
             w_all.append(w_t)
         return torch.stack(x_all), y, *[torch.stack(w_) for w_ in zip(*w_all)]
 
-    def _shared_step(self, batch, batch_idx, prefix="train"):
+    def _shared_step(self, batch, batch_idx, prefix="train", return_outputs=False):
 
         self._process_state(batch, batch_idx, train=(prefix == "train"))
-
+        
         x, y, *w = self.forward(batch)
-
+        
         # Loss
         loss = self.loss(x, y, *w)
 
@@ -237,7 +239,7 @@ class SequenceLightningModule(pl.LightningModule):
             add_dataloader_idx=False,
             sync_dist=True,
         )
-        return loss
+        return loss if not return_outputs else (loss, x, y, *w)
 
     def on_train_epoch_start(self):
         # Reset training torchmetrics
@@ -332,14 +334,51 @@ class SequenceLightningModule(pl.LightningModule):
         )  # There's a bit of an annoying edge case with the first (0-th) epoch; it has to be excluded due to the initial sanity check
         if ema:
             self.optimizers().swap_ema()
-        loss = self._shared_step(
-            batch, batch_idx, prefix=self.val_loader_names[dataloader_idx]
-        )
+        
+        if not self.hparams.trainer.save_val_outputs or dataloader_idx != 0:
+            loss = self._shared_step(
+                batch, batch_idx, prefix=self.val_loader_names[dataloader_idx]
+            )
+        else:
+            loss, x, y, *w = self._shared_step(
+                batch, batch_idx, prefix=self.val_loader_names[dataloader_idx], 
+                return_outputs=True
+            )
+            _, _, *z = batch
+            
+            outputs = [x, y, z, batch_idx, dataloader_idx]
+            self._save_tensors(outputs, f'{x.device}_{batch_idx}_{dataloader_idx}.pt', prefix='val')
+            
         if ema:
             self.optimizers().swap_ema()
-
+        
         return loss
-
+    
+    def _save_tensors(self, tensors, file_name, prefix='val', max_dir_size_mb=2000):#np.inf):
+        # trainer.current_epoch
+        if max_dir_size_mb <= 0: return
+        output_dir = os.path.dirname(os.path.normpath(self.trainer.checkpoint_callback.dirpath))
+        save_dir = os.path.join(output_dir, f'{prefix}_outputs')
+        os.makedirs(save_dir, exist_ok=True)
+        assert file_name.endswith('.pt')
+        torch.save(tensors, os.path.join(save_dir, file_name))
+        if self.trainer.local_rank == 0:
+            self._truncate_directory(save_dir, max_dir_size_mb)
+                        
+    def _truncate_directory(self, d, max_dir_size_mb):
+        if max_dir_size_mb == np.inf:
+            return
+        files = [{'path':f, 'modified': os.path.getmtime(f), 'mb': os.path.getsize(f)*2**-20} 
+                 for f in os.scandir(d) if f.is_file()
+                ]
+        files.sort(key=lambda x: -x['modified'])  # recent first
+        disk = 0
+        for f in files:
+            disk += f['mb']
+            if disk <= max_dir_size_mb:
+                continue
+            os.remove(f['path'].path)
+        
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         return self._shared_step(
             batch, batch_idx, prefix=self.test_loader_names[dataloader_idx]
@@ -449,13 +488,13 @@ class SequenceLightningModule(pl.LightningModule):
 def create_trainer(config, **kwargs):
     callbacks: List[pl.Callback] = []
     logger = None
-
+        
     # WandB Logging
     if config.get("wandb") is not None:
         # Pass in wandb.init(config=) argument to get the nice 'x.y.0.z' hparams logged
         # Can pass in config_exclude_keys='wandb' to remove certain groups
         import wandb
-
+        
         logger = WandbLogger(
             config=utils.to_dict(config, recursive=True),
             settings=wandb.Settings(start_method="fork"),
@@ -471,11 +510,14 @@ def create_trainer(config, **kwargs):
             callback._name_ = _name_
             callbacks.append(utils.instantiate(registry.callbacks, callback))
 
+    config.trainer.pop('save_val_outputs')
+    find_unused_parameters = config.trainer.pop('find_unused_parameters')  # default True
+
     # Configure ddp automatically
     if config.trainer.gpus > 1:
         kwargs["plugins"] = [
             pl.plugins.DDPPlugin(
-                find_unused_parameters=True,
+                find_unused_parameters=find_unused_parameters,
                 gradient_as_bucket_view=False,  # https://pytorch-lightning.readthedocs.io/en/stable/advanced/advanced_gpu.html#ddp-optimizations
             )
         ]
@@ -493,7 +535,7 @@ def create_trainer(config, **kwargs):
 def train(config):
     if config.train.seed is not None:
         pl.seed_everything(config.train.seed, workers=True)
-    trainer = create_trainer(config)
+    trainer = create_trainer(deepcopy(config))
     model = SequenceLightningModule(config)
     trainer.fit(model)
     if config.train.test:
@@ -541,6 +583,7 @@ def main(config: OmegaConf):
     # - register evaluation resolver
     # - filter out keys used only for interpolation
     # - optional hooks, including disabling python warnings or debug friendly configuration
+    
     config = utils.train.process_config(config)
 
     # Pretty print config using Rich library

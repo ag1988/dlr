@@ -1,0 +1,8 @@
+_name_: listops_subtrees
+l_max: 2048
+l_min: 1500
+ignore_index: -100
+target: SubTreeEvals
+n_workers: 4 # Only used for tokenizing once
+max_vocab: 24 # Actual size 18
+__l_max: ${.l_max}

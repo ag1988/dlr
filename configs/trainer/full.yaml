@@ -8,6 +8,8 @@ process_position: 0
 num_nodes: 1
 num_processes: 1
 gpus: null
+find_unused_parameters: True
+save_val_outputs: False
 auto_select_gpus: False
 tpu_cores: null
 log_gpu_memory: null

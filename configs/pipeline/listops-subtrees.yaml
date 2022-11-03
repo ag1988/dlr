@@ -1,0 +1,31 @@
+# @package _global_
+defaults:
+  - /trainer: default
+  - /optimizer: adamw
+  - /scheduler: constant
+  - /loader: torch
+  - /dataset: listops-subtrees
+
+train:
+  monitor: val/accuracy_ignore_m100  # Needed for plateau scheduler
+  mode: max
+
+task:
+  _name_: base
+  loss: cross_entropy
+  metrics: accuracy_ignore_m100
+  torchmetrics: null
+
+
+encoder: embedding
+
+decoder:
+  _name_: sequence
+  mode: last
+
+trainer:
+  val_check_interval: 1.0  # float/int have diff behavior
+  save_val_outputs: False
+
+
+

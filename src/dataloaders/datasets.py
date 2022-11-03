@@ -4,6 +4,9 @@ from functools import partial
 import os
 import io
 from pathlib import Path
+import itertools
+from collections import Counter
+from tqdm.auto import tqdm 
 
 import logging
 import pickle
@@ -546,9 +549,9 @@ class Copying(SequenceDataset):
     @property
     def init_defaults(self):
         return {
-            "l_noise": 100,  # number of padding tokens
-            "l_memorize": 10,  # number of tokens to memorize
-            "n_tokens": 10,  # alphabet size
+            "l_noise": 100,     # number of padding tokens
+            "l_memorize": 10,   # number of tokens to memorize
+            "n_tokens": 10,     # alphabet size
             "variable": False,  # Randomly distribute memorization tokens throughout sequence instead of frontloading them
             "n_samples": 50000,
             "val_split": 0.1,
@@ -582,49 +585,59 @@ class Copying(SequenceDataset):
     def __str__(self):
         return f"{self._name_}{self.l_noise}{'v' if self.variable else ''}"
 
-
-class Capacity(SequenceDataset):
-    _name_ = "capacity"
-
+    
+class Sequence1d(SequenceDataset):
+    _name_ = "sequence1d"
+        
     @property
     def init_defaults(self):
         return {
-            "inp_length": 1024,        # input length
-            "n_memorize": 100,         # number of shifts
-            "samples_per_epoch": 1600,
+            "samples_per_epoch": 16000,
             "val_split": 0.1,
+            "L": 1024,            
+            "task": 'copy',
+            "D": 4,                # mips: query/key/val dim
+            "causal": True,        # mips: only prev keys matched
+            "M": 32,               # masked_select: num tokens to copy
+            "variable": True,      # masked_select: vary positions to copy across batches
+            "consecutive": False,  # masked_select: use consecutive positions to copy
+            "num_shifts": 8,       # shift task
         }
 
-    @property
-    def d_input(self):
-        return 1
-
-    @property
-    def d_output(self):
-        return self.n_memorize
-
-    @property
-    def l_output(self):
-        return self.inp_length
-
     def setup(self):
-        from .capacity import CapacityTrainDataset
-
-        self.dataset_train = CapacityTrainDataset(
-            self.inp_length,
-            self.n_memorize,
-            int(self.samples_per_epoch*(1-self.val_split)),
+        from .sequence1d import Sequence1dTrainDataset, Sequence1dEvalDataset
+        
+        kwargs = {'L': self.L, 
+                  'task': self.task, 
+                  'D': self.D, 
+                  'causal': self.causal, 
+                  'M': self.M, 
+                  'variable': self.variable, 
+                  'consecutive': self.consecutive,
+                  'num_shifts': self.num_shifts,
+                 }
+        self.dataset_train = Sequence1dTrainDataset(
+            samples_per_epoch=int(self.samples_per_epoch*(1-self.val_split)), **kwargs
+        )
+        
+        num_valid_samples = int(self.samples_per_epoch*self.val_split)# if int(self.val_split) < 1 else int(self.val_split)
+        self.dataset_val = Sequence1dTrainDataset(
+            samples_per_epoch=num_valid_samples, **kwargs
         )
         self.dataset_test = None
-        self.dataset_val = CapacityTrainDataset(
-            self.inp_length,
-            self.n_memorize,
-            int(self.samples_per_epoch*self.val_split)
-        )
-        self.shuffle_train = None  # IterableDataset doesn't accept "shuffle" 
-
+        self.shuffle_train = None  # IterableDataset doesn't accept "shuffle"
+        
+        if self.task == 'shift':
+            self.d_input, self.d_output, self.l_output = 3, self.num_shifts, self.L
+        elif 'masked_select' in self.task:
+            self.d_input, self.d_output, self.l_output = 4, 1, self.M
+        elif self.task == 'mips':
+             self.d_input, self.d_output, self.l_output = 3*self.D+2, self.D, self.L
+        else:
+            self.d_input, self.d_output, self.l_output = 3, 1, self.L
+        
     def __str__(self):
-        return f"{self._name_}{self.inp_length}{self.n_memorize}"
+        return f"{self._name_}{self.L}{self.task}"
 
     
 class Adding(SequenceDataset):
@@ -1116,9 +1129,12 @@ class PathFinderDataset(torch.utils.data.Dataset):
 
 class PathFinder(SequenceDataset):
     _name_ = "pathfinder"
-    d_input = 1
     d_output = 2
     l_output = 0
+    
+    @property
+    def d_input(self):
+        return 4 if self.all_corners else 1
 
     @property
     def n_tokens(self):
@@ -1132,6 +1148,7 @@ class PathFinder(SequenceDataset):
             "sequential": True,
             "tokenize": False,
             "pool": 1,
+            "all_corners": False,     # stack 0,90,180,270 degree rotations
             "val_split": 0.1,
             "test_split": 0.1,
             "seed": 42,  # Controls the train/val/test split
@@ -1142,7 +1159,13 @@ class PathFinder(SequenceDataset):
             self.data_dir = (
                 default_data_path / self._name_ / f"pathfinder{self.resolution}"
             )
-
+    
+    def rotations(self, x, dim=-3):
+        assert x.shape[-2] == x.shape[-1], 'must be square'
+        assert x.ndim >= 3
+        rotations = [x] + [torchvision.transforms.functional.rotate(x, 90*i) for i in range(1,4)]
+        return torch.cat(rotations, dim=dim)
+    
     def default_transforms(self):
         transform_list = [torchvision.transforms.ToTensor()]
         if self.pool > 1:
@@ -1160,12 +1183,14 @@ class PathFinder(SequenceDataset):
             )
         else:
             transform_list.append(torchvision.transforms.Normalize(mean=0.5, std=0.5))
+        if self.all_corners:
+            transform_list.append(self.rotations)    # (4 h w)
         if self.sequential:
             # If tokenize, it makes more sense to get rid of the channel dimension
             transform_list.append(
                 Rearrange("1 h w -> (h w)")
-                if self.tokenize
-                else Rearrange("1 h w -> (h w) 1")
+                if self.tokenize and not self.all_corners
+                else Rearrange("r h w -> (h w) r")
             )
         return torchvision.transforms.Compose(transform_list)
 
@@ -1201,8 +1226,8 @@ class PathFinder(SequenceDataset):
             [train_len, val_len, test_len],
             generator=torch.Generator().manual_seed(self.seed),
         )
-
-
+        
+        
 class AAN(SequenceDataset):
     _name_ = "aan"
     d_output = 2  # Use accuracy instead of binary_accuracy
@@ -1383,3 +1408,357 @@ class AAN(SequenceDataset):
         return dataset, tokenizer, vocab
 
 
+class PathFinderSegmentationDataset(torch.utils.data.Dataset):
+    """Path Finder dataset with extra supervision."""
+
+    def __init__(self, data_dir, input_transform, prepare_target):
+        """
+        Args:
+            data_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+            prepare_target: function for preparing target from path supervision file
+        """
+        self.data_dir = Path(data_dir).expanduser()
+        assert self.data_dir.is_dir(), f"data_dir {str(self.data_dir)} does not exist"
+        self.input_transform = input_transform
+        self.prepare_target = prepare_target
+        samples = []
+        path_list = sorted(
+            list((self.data_dir / "metadata").glob("*.npy")),
+            key=lambda path: int(path.stem),
+        )
+        assert path_list, "No metadata found"
+        for metadata_file in path_list:
+            for metadata in np.load(metadata_file).tolist():
+                image_path = Path(metadata[0]) / metadata[1]   # 'imgs/0', 'sample_0.png'
+                label = int(metadata[3])  
+                segments_path = Path(metadata[0].replace('imgs/', 'paths/')) / metadata[1].replace('.png', '.pkl')
+                # 'paths/0', 'sample_0.pkl'
+                samples.append((image_path, label, segments_path))
+        self.samples = samples
+    
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        image_path, label, segments_path = self.samples[idx]
+        # https://github.com/pytorch/vision/blob/9b29f3f22783112406d9c1a6db47165a297c3942/torchvision/datasets/folder.py#L247
+        with open(self.data_dir / image_path, "rb") as f:
+            orig_sample = Image.open(f).convert("L")  # Open in grayscale
+        if self.input_transform is not None:
+            sample = self.input_transform(orig_sample)
+        
+        segmentation = pickle.load(open(self.data_dir / segments_path,'rb'))
+        target = self.prepare_target(segmentation, label, orig_sample)
+        return sample, target
+
+
+class PathFinderSegmentation(SequenceDataset):
+    _name_ = "pathfinder_segmentation"
+    d_output = 3
+    l_output = None
+    
+    @property
+    def d_input(self):
+        return 4 if self.all_corners else 1
+
+    @property
+    def n_tokens(self):
+        if self.tokenize:
+            return 256
+
+    @property
+    def init_defaults(self):
+        return {
+            "resolution": 128,
+            "sequential": True,
+            "tokenize": False,
+            "autoregressive": False,  # if sequential, pad by L 0's on right and take last L outputs
+            "pool": 1,
+            "all_corners": False,     # stack 0,90,180,270 degree rotations
+            "val_split": 0.1,
+            "test_split": 0.1,
+            "seed": 42,  # Controls the train/val/test split
+        }
+
+    def init(self):
+        if self.data_dir is None:
+            self.data_dir = (
+                default_data_path / self._name_ / f"pathfinder{self.resolution}_segmentation"
+            )
+        if self.autoregressive: 
+            assert self.sequential
+            self.l_output = self.resolution**2
+            
+    def rotations(self, x, dim=-3):
+        assert x.shape[-2] == x.shape[-1], 'must be square'
+        assert x.ndim >= 3
+        rotations = [x] + [torchvision.transforms.functional.rotate(x, 90*i) for i in range(1,4)]
+        return torch.cat(rotations, dim=dim)
+    
+    def zero_pad_right(self, x, dim=-2):
+        assert dim < 0
+        L = x.shape[dim]
+        assert self.l_output == L
+        return F.pad(x, (0,0)*abs(dim+1) + (0,L))
+    
+    def input_transform(self):
+        transform_list = [torchvision.transforms.ToTensor()]
+        if self.pool > 1:
+            transform_list.append(
+                Reduce(
+                    "1 (h h2) (w w2) -> 1 h w",
+                    "mean",
+                    h2=self.pool,
+                    w2=self.pool,
+                )
+            )
+        if self.tokenize:
+            transform_list.append(
+                torchvision.transforms.Lambda(lambda x: (x * 255).long())
+            )
+        else:
+            transform_list.append(torchvision.transforms.Normalize(mean=0.5, std=0.5))
+        if self.all_corners:
+            transform_list.append(self.rotations)    # (4 h w)
+        if self.sequential:
+            # If tokenize, it makes more sense to get rid of the channel dimension
+            transform_list.append(
+                Rearrange("1 h w -> (h w)")
+                if self.tokenize and not self.all_corners
+                else Rearrange("r h w -> (h w) r")
+            )
+            if self.autoregressive:
+                transform_list.append(
+                    partial(self.zero_pad_right, dim=-1) 
+                    if self.tokenize
+                    else partial(self.zero_pad_right, dim=-2)
+                )
+        return torchvision.transforms.Compose(transform_list)
+    
+    def prepare_target(self, d, label=None, orig_sample=None):
+        # d.keys(): 'segs', 'origin_tips', 'terminal_tips', 'marker_indices', 'image_size'
+        [origin_mark_idx, terminal_mark_idx] = d['marker_indices']
+        
+        if label is not None:
+            assert label == (origin_mark_idx == terminal_mark_idx)
+        
+        paths = []
+        for i, path_inds in enumerate(d['segs']):
+            path = np.zeros(d['image_size'], dtype=np.int16)
+            path[path_inds] = 1 + (origin_mark_idx == terminal_mark_idx == i)
+            paths.append(path)
+        # 0: not on a long path, 1: on a long path but not any connecting path, 2: on a connecting path 
+        label_mask = torch.LongTensor(np.maximum(*paths))        
+        
+        # sanity
+        # label_mask = (torchvision.transforms.ToTensor()(orig_sample) > 0).long().squeeze(0)
+        
+        if self.sequential:
+            label_mask = rearrange(label_mask, "h w -> (h w)")
+        return label_mask
+        
+    def prepare_data(self):
+        if not self.data_dir.is_dir():
+            raise FileNotFoundError(
+            f"""
+            Directory {str(self.data_dir)} not found.
+            To get the dataset, generate pathfinder data using /src/dataloaders/prepare/pathfinder .
+            Then point data_dir to the pathfinderX_segmentation directory, where X is either 128, or 256.
+            """
+            )
+
+    def setup(self, stage=None):
+        if stage == "test" and hasattr(self, "dataset_test"):
+            return
+        
+        # [2021-08-18] TD: I ran into RuntimeError: Too many open files.
+        # https://github.com/pytorch/pytorch/issues/11201
+        torch.multiprocessing.set_sharing_strategy("file_system")
+        dataset = PathFinderSegmentationDataset(self.data_dir, self.input_transform(), self.prepare_target)
+        len_dataset = len(dataset)
+        print(f'Total num of samples = {len_dataset}')
+        val_len = int(self.val_split * len_dataset)
+        test_len = int(self.test_split * len_dataset)
+        train_len = len_dataset - val_len - test_len
+        (
+            self.dataset_train,
+            self.dataset_val,
+            self.dataset_test,
+        ) = torch.utils.data.random_split(
+            dataset,
+            [train_len, val_len, test_len],
+            generator=torch.Generator().manual_seed(self.seed),
+        )
+
+    
+class ListOpsSubTrees(SequenceDataset):
+    _name_ = "listops_subtrees"
+    l_output = 2048
+
+    @property
+    def init_defaults(self):
+        return {
+            "l_min": 1500,     # just a safety measure
+            "l_max": 2048,
+            # 'max_vocab': 20, # Actual size 18
+            "n_workers": 4,  # Only used for tokenizing dataset
+            "ignore_index": -100,
+            "target": "SubTreeEvals",
+        }
+
+    @property
+    def d_output(self):
+        return len(self.vocab)
+    
+    @property
+    def n_tokens(self):
+        return len(self.vocab)
+
+    @property
+    def _cache_dir_name(self):
+        return f"l_min-{self.l_min}-l_max-{self.l_max}-target-{self.target}"
+
+    def init(self):
+        if self.data_dir is None:
+            self.data_dir = default_data_path / self._name_
+        self.cache_dir = self.data_dir / self._cache_dir_name
+        self.l_output = self.l_max
+        
+    def prepare_data(self):
+        if self.cache_dir is None:
+            for split in ["train", "val", "test"]:
+                split_path = self.data_dir / f"subtrees_{split}.tsv"
+                if not split_path.is_file():
+                    raise FileNotFoundError(
+                        f"""
+                    File {str(split_path)} not found.
+                    """
+                    )
+        else:  # Process the dataset and save it
+            self.process_dataset()
+
+    def setup(self, stage=None):
+        if stage == "test" and hasattr(self, "dataset_test"):
+            return
+        dataset, self.tokenizer, self.vocab = self.process_dataset()
+        self.vocab_size = len(self.vocab)
+        dataset.set_format(type="torch", columns=["input_ids", "label_ids", "Id"])
+        self.dataset_train, self.dataset_val, self.dataset_test = (
+            dataset["train"],
+            dataset["val"],
+            dataset["test"],
+        )
+
+        def collate_batch(batch, resolution=1):
+            xs, ys, ids = zip(*[(data["input_ids"], data["label_ids"], data["Id"]) for data in batch])
+            xs, ys, ids = map(torch.stack, (xs, ys, ids))
+            assert xs.shape == ys.shape
+            
+            # replace self.vocab["<pad>"] by self.ignore_index to avoid computing loss at <pad>
+            ys[ys == self.vocab["<pad>"]] = self.ignore_index
+            return xs, ys, ids
+        
+        self.collate_fn = collate_batch
+
+    def process_dataset(self):
+        cache_dir = self.cache_dir 
+        if cache_dir is not None and cache_dir.is_dir():
+            return self._load_from_cache(cache_dir)
+        
+        dataset = load_dataset(
+            "csv",
+            data_files={
+                split: str(self.data_dir / f"subtrees_{split}.tsv") 
+                for split in ['train', 'val', 'test']
+            },
+            delimiter="\t",
+            keep_in_memory=True,
+            download_mode="force_redownload",
+        )
+        
+        from datasets import set_caching_enabled
+        set_caching_enabled(False)
+        
+        columns_to_remove = set(dataset['train'].features.keys()).difference({'Source', self.target, 'SubTreeInds', 'Id'}) 
+        dataset = dataset.remove_columns(columns_to_remove)
+        
+        tokenizer = listops_tokenizer
+        
+        def tokenize(example):
+            in_tokens = tokenizer(example["Source"])
+            out_tokens = tokenizer(example[self.target])
+            inds = list(map(int, example["SubTreeInds"].split()))
+            
+            assert len(out_tokens) == len(inds), f"{len(out_tokens)}, {len(inds)}"
+            assert self.l_min <= len(in_tokens) <= self.l_max, f'truncation not supported {self.l_min} <= {len(in_tokens)} <= {self.l_max}'
+            
+            _out_tokens = ["<pad>"]*len(in_tokens)
+            # make predictions at "]"
+            for ind, tok in zip(inds, out_tokens):
+                _out_tokens[ind] = tok
+            
+            return {"in_tokens": in_tokens, "out_tokens": _out_tokens}
+        
+        logger = logging.getLogger(__name__)
+        logger.info("Tokenizing...can take a long time and memory")
+        
+        dataset = dataset.map(
+            tokenize,
+            remove_columns=["Source", self.target, "SubTreeInds"],
+            keep_in_memory=True,
+            load_from_cache_file=False,
+            # num_proc=max(self.n_workers, 1),
+        )
+        
+        vocab = torchtext.vocab.build_vocab_from_iterator(
+            itertools.chain(dataset["train"]["in_tokens"], dataset["train"]["out_tokens"]),
+            specials=["<pad>", "<unk>"],
+        )
+        vocab.set_default_index(vocab["<unk>"])
+        
+        def numericalize(example):
+            input_ids = vocab(
+                example["in_tokens"] + ["<pad>"]*(self.l_max - len(example["in_tokens"]))
+            )
+            
+            label_ids = vocab(
+                example["out_tokens"] + ["<pad>"]*(self.l_max - len(example["in_tokens"]))
+            )
+            return {"input_ids": input_ids, "label_ids": label_ids}
+        
+        logger.info("Forming token ids...")
+        dataset = dataset.map(
+            numericalize,
+            remove_columns=["in_tokens", "out_tokens"],
+            keep_in_memory=True,
+            load_from_cache_file=False,
+            # num_proc=max(self.n_workers, 1),
+        )
+        
+        logger.info("caching...")
+        if cache_dir is not None:
+            self._save_to_cache(dataset, tokenizer, vocab, cache_dir)
+        return dataset, tokenizer, vocab
+
+    def _save_to_cache(self, dataset, tokenizer, vocab, cache_dir):
+        cache_dir = self.cache_dir
+        logger = logging.getLogger(__name__)
+        logger.info(f"Saving to cache at {str(cache_dir)}")
+        dataset.save_to_disk(str(cache_dir))
+        with open(cache_dir / "tokenizer.pkl", "wb") as f:
+            pickle.dump(tokenizer, f)
+        with open(cache_dir / "vocab.pkl", "wb") as f:
+            pickle.dump(vocab, f)
+
+    def _load_from_cache(self, cache_dir):
+        assert cache_dir.is_dir()
+        logger = logging.getLogger(__name__)
+        logger.info(f"Load from cache at {str(cache_dir)}")
+        dataset = DatasetDict.load_from_disk(str(cache_dir))
+        with open(cache_dir / "tokenizer.pkl", "rb") as f:
+            tokenizer = pickle.load(f)
+        with open(cache_dir / "vocab.pkl", "rb") as f:
+            vocab = pickle.load(f)
+        return dataset, tokenizer, vocab

@@ -1,0 +1,5 @@
+[default]
+entity = ag1988
+project = hippo
+base_url = https://api.wandb.ai
+

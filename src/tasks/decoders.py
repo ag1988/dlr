@@ -55,8 +55,7 @@ class SequenceDecoder(Decoder):
         x: (n_batch, l_seq, d_model)
         Returns: (n_batch, l_output, d_output)
         """
-
-
+        
         if self.l_output is None:
             if isinstance(l_batch, int): # Override by pass in
                 l_output = l_batch

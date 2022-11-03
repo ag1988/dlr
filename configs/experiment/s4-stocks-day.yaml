@@ -1,0 +1,19 @@
+# @package _global_
+defaults:
+  - /pipeline: stocks
+  - /model: s4
+  # - override /dataset: stocks_hour
+
+trainer:
+  max_epochs: 40
+
+loader:
+  batch_size: 64
+
+model:
+  dropout: 0.1
+  n_layers: 6
+  d_model: 384
+
+optimizer:
+  lr: 0.001

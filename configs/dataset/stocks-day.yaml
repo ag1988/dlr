@@ -1,0 +1,10 @@
+_name_: stocks_1d
+max_num_stocks: -1
+size: [505, 7]      # [history len, len to forecast]
+target: "close" 
+scale: True
+mode: 'diff'        # predict diff from most recent target 
+freq: "t"
+# cols: ['close']  # predict only using target
+cols: ['year', 'month', 'day', 'weekday', 'high', 'low', 'open', 'close', 'volume', 'return']
+__l_max: ${eval:${.size.0}+${.size.1}}

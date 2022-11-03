@@ -5,6 +5,7 @@ import logging
 from functools import partial
 import math
 import numpy as np
+from tqdm.auto import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,6 +33,9 @@ except ImportError:
 
 # has_pykeops = False
 
+from .attention import Attention
+
+
 def get_logger(name=__name__, level=logging.INFO) -> logging.Logger:
     """Initializes multi-GPU-friendly python logger."""
 
@@ -50,6 +54,17 @@ log = get_logger(__name__)
 
 """ simple nn.Module components """
 
+class GEGLU(nn.Module):
+    def __init__(self, dim=-1, f=F.gelu):
+        super().__init__()
+        self.dim = dim
+        self.f = f
+        
+    def forward(self, x):
+        x, gates = x.chunk(2, dim=self.dim)
+        return x * self.f(gates)
+
+
 def Activation(activation=None, dim=-1):
     if activation in [ None, 'id', 'identity', 'linear' ]:
         return nn.Identity()
@@ -63,6 +78,8 @@ def Activation(activation=None, dim=-1):
         return nn.SiLU()
     elif activation == 'glu':
         return nn.GLU(dim=dim)
+    elif activation == 'geglu':
+        return GEGLU(dim=dim)
     elif activation == 'sigmoid':
         return nn.Sigmoid()
     else:
@@ -113,6 +130,7 @@ class TransposedLinear(nn.Module):
             self.bias = 0.0
 
     def forward(self, x):
+        assert x.shape[-2] == self.weight.shape[-1]
         return contract('... u l, v u -> ... v l', x, self.weight) + self.bias
 
 
@@ -130,7 +148,7 @@ def LinearActivation(
 
     # Construct core module
     linear_cls = TransposedLinear if transposed else nn.Linear
-    if activation == 'glu': d_output *= 2
+    if activation in ['glu', 'geglu']: d_output *= 2
     linear = linear_cls(d_input, d_output, bias=bias, **kwargs)
     
     # Initialize weight
@@ -281,9 +299,11 @@ class DSSKernel(OptimModule):
             
     def init(self, N, H, channels, l_max, dt_min, dt_max, sep_dt_re_im, Lambda_init):
         if Lambda_init == 'hippo_skew_pos_imag':
-            w = hippo_skew_evals(2*N)[:N] - .5                          # [N]
+            w = -.5 + hippo_skew_evals(2*N)[:N]                         # [N]
+        elif Lambda_init == 'lin':
+            w = -.5 + 2j*np.pi*torch.arange(N) / N    #----------                     # [N]
         elif Lambda_init == 'randn':
-            w = torch.randn(N, dtype=torch.cfloat)                      # [N]
+            w = -.5 + 1j*torch.randn(N, dtype=torch.float)                      # [N]
         else:
             raise NotImplementedError(f"Lambda init {Lambda_init} is not implemented")
         
@@ -295,8 +315,19 @@ class DSSKernel(OptimModule):
             log_dt = log_dt.view(-1,1).tile(2)                          # [H,2]
         
         W = torch.randn(channels, H, N, 2)                              # [C H N 2]
+        
+        # --------
+        # W = self.W_init(log_dt, Lambda, W)
+        
         return log_dt, Lambda, W 
     
+    
+    def W_init(self, log_dt, Lambda, W):
+        # [H]
+        Lambda, W = _r2c(Lambda), _r2c(W)   # [N], [C H N]
+        dt_Lambda = log_dt.exp().unsqueeze(-1) * Lambda  # [H N]
+        W = W * (dt_Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)   # [C H N]
+        return _c2r(W)
     
     def _Lambda(self):
         if 'exp' in self.version:
@@ -342,6 +373,9 @@ class DSSKernel(OptimModule):
             W = W * (dt_Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)   # [C H N]
         
         # else exp-no-scale
+        # else:  # exp-no-scale
+            # W = W * (dt_Lambda.exp() - 1)
+            # W = W * reciprocal(Lambda, clamp=True)   # [C H N]
         
         # has_pykeops = False
         if not has_pykeops:
@@ -404,13 +438,16 @@ class DLRKernel(OptimModule):
         N=2**12,
         l_max=None,             # currently unused
         channels=1,
+        dt_min=1e-4,
+        dt_max=1e-1,
         trainable=None,         # Dictionary of options to train various parameters
         lr=None,                # Hook to set LR of parameters differently
         version='Lambda_imag_W_real',
         Lambda_init='omega',
         W_scale=None,           # default 1/N
+        wd=0,                   # weight decay of W
         pykeops=True,           # use pykeops implementation
-        kernel_to_real='prod',  # cast complex kernel to real
+        kernel_to_real='real',  # cast complex kernel to real
         **kwargs,               # sink
     ):
         super().__init__()
@@ -423,11 +460,12 @@ class DLRKernel(OptimModule):
         
         # complex tensors are stored as real with an extra last dim of size 2 
         # to denote real, imag parts as ADAM moments are non-linear  
-        Lambda, W = self.init(N, H, channels, l_max, Lambda_init, self.W_scale)  # [N,2], [H N] 
+        Lambda, W = self.init(N, H, channels, l_max, dt_min, dt_max, Lambda_init, self.W_scale)  # [N,2], [H N] 
         
-        self.lr = DictConfig({"Lambda": 5e-5, "W": 5e-5})
+        self.lr = DictConfig({"Lambda": 1e-4, "Lambda_re": 1e-4, "W": 1e-4})
         if lr is not None:
             self.lr.update(lr)
+        if lr.Lambda_re is None: lr.Lambda_re = lr.Lambda
         
         self.trainable = DictConfig({"Lambda": True, "W": True})
         if trainable is not None:
@@ -435,17 +473,23 @@ class DLRKernel(OptimModule):
         
         self.register("Lambda_im", Lambda[:,1], self.trainable.Lambda, self.lr.Lambda, wd=0.0)
         if 'Lambda_imag' not in self.version:
-            self.register("Lambda_log_neg_re", (-Lambda[:,0]).log(), self.trainable.Lambda, self.lr.Lambda, wd=0.0)
-        self.register("W", W, self.trainable.W, self.lr.W, wd=0.0)    # [C H N *]
+            self.register("Lambda_log_neg_re", Lambda[:,0].abs().pow(.5), self.trainable.Lambda, self.lr.Lambda_re, wd=0.0)
+        self.register("W", W, self.trainable.W, self.lr.W, wd=wd)    # [C H N *]
 
-    def init(self, N, H, channels, l_max, Lambda_init, W_scale):
+    def init(self, N, H, channels, l_max, dt_min, dt_max, Lambda_init, W_scale):
+        dt = (math.log(dt_min) + torch.rand(N) * (math.log(dt_max) - math.log(dt_min))).exp()  # [N]
+        
         if Lambda_init == 'omega':
-            w = -1e-7 + 2j*np.pi*torch.arange(N) / N                    # [N]
+            w = -.5*dt + 2j*np.pi*torch.arange(N) / N                    # [N]
         elif Lambda_init == 'randn':
-            w = torch.randn(N, dtype=torch.cfloat)                      # [N]
+            w = -.5*dt + 1j*torch.randn(N)                               # [N]
+        # elif Lambda_init == 'hippo_skew_pos_imag':
+        #     # w = -1e-5 + hippo_skew_evals(2*N)[:N]                         # [N]
+        #     w = dt*(-.5 + hippo_skew_evals(2*N)[:N])                      # [N]
         else:
             raise NotImplementedError(f"Lambda init {Lambda_init} is not implemented")
         
+        w.imag = w.imag % (2*np.pi)  # this is ok in dlr
         Lambda = _c2r(w.reshape(-1).to(torch.cfloat))                   # [N 2]
         
         W_shape = (channels, H, N) if 'W_real' in self.version else (channels, H, N, 2)
@@ -454,9 +498,9 @@ class DLRKernel(OptimModule):
     
     def get_params(self):
         if 'Lambda_imag' in self.version:
-            Lambda = self.Lambda_im*1j
+            Lambda = 1j*self.Lambda_im
         else:
-            Lambda = -self.Lambda_log_neg_re.exp() + self.Lambda_im*1j
+            Lambda = -self.Lambda_log_neg_re.pow(2) + 1j*self.Lambda_im
         
         if 'W_real' in self.version:
             W = self.W + 0j
@@ -483,14 +527,17 @@ class DLRKernel(OptimModule):
         if self.version == 'Lambda_imag_W_real':
             assert all(map(torch.is_floating_point, (W, Lambda)))
             P = x_l * l_l                                         # symbolic [1 1 N L]
-            S = P.cos().concat(P.sin())                           # symbolic [1 1 N L 2]
+            if self.kernel_to_real == 'real':
+                S = P.cos()                                       # symbolic [1 1 N L 1]
+            else:
+                S = P.cos().concat(P.sin())                       # symbolic [1 1 N L 2]
             K = (v_l * S).sum(dim=len(v_l.shape)-2)               # [C H N L 2]->[C H L 2]
         else:
             assert not Lambda.is_floating_point()
             S = (x_l * l_l).exp()                                 # symbolic [1 H N L 1]
             K = (v_l * S).sum(dim=len(v_l.shape)-2)               # [C H N L 1]->[C H L 1]
             K = _c2r(K.squeeze(-1))
-        assert K.ndim == 4 and K.shape[-1] == 2
+        assert K.ndim == 4 and K.shape[-1] <= 2
         return K                                                  # [C H L 2]
     
     def kernel(self, W, Lambda, L):
@@ -505,7 +552,11 @@ class DLRKernel(OptimModule):
             K = self.kernel_pykeops(self.W, self.Lambda_im, L)         # [C H L 2]
         else:
             Lambda, W = self.get_params()                              # [N], [C H N]
-            K = self.kernel_pykeops(self.W, Lambda, L=L)               # [C H L 2]
+            
+            #---------- like DSS
+            # W = W * (Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)   # [C H N]
+            
+            K = self.kernel_pykeops(W, Lambda, L=L)                    # [C H L 2]
             # K = self.kernel(W, Lambda, L=L)                          # [C H L 2]
         return self.cast_kernel(K, self.kernel_to_real), state         # [C H L]
     
@@ -524,7 +575,7 @@ class DLRKernel(OptimModule):
 """ DSS Block """
 
 class DSS(nn.Module):
-
+    
     def __init__(
             self,
             d_model,
@@ -587,11 +638,15 @@ class DSS(nn.Module):
         # SSM Kernel
         self.max_kernel_length = max_kernel_length
         
-        assert kernel_type in ['dss', 'dlr']
+        assert kernel_type in ['dss', 'dlr', 'attn']
         if kernel_type == 'dss':
             self.kernel = DSSKernel(self.h, self.n, l_max=l_max, channels=channels, **kernel_args)
         elif kernel_type == 'dlr':
             self.kernel = DLRKernel(self.h, self.n, l_max=l_max, channels=channels, **kernel_args)
+        elif kernel_type == 'attn':
+            assert self.channels == 1 and not self.hyper
+            self.attn = Attention(self.h, n_heads=4, causal=not bidirectional, transposed=transposed, **kernel_args)
+        self.kernel_type = kernel_type
         
         # Pointwise
         self.activation = Activation(activation)
@@ -609,7 +664,13 @@ class DSS(nn.Module):
             weight_norm=weight_norm,
         )
 
-
+    def forward_attn(self, u):
+        y = self.attn(u)        
+        y = u + self.dropout(self.activation(y))
+        if not self.transposed: y = y.transpose(-1, -2)
+        y = self.output_linear(y)
+        return y, None
+    
     def forward(self, u, **kwargs): # absorbs return_output and transformer src mask
         """
         u: (B H L) if self.transposed else (B L H)
@@ -617,28 +678,33 @@ class DSS(nn.Module):
 
         Returns: same shape as u
         """
+        
+        if self.kernel_type == 'attn': return self.forward_attn(u)
+        
         if not self.transposed: u = u.transpose(-1, -2)
         L = u.size(-1)
         
         # Compute SS Kernel
-        Lk = L if not self.max_kernel_length else min(self.max_kernel_length, L)
+        Lk = min(self.max_kernel_length, L) if self.max_kernel_length else L 
         k, _ = self.kernel(L=Lk)  # (C H Lk) (B C H Lk)
+        offset = 0
         
-        # Convolution
         if self.bidirectional:
-            k0, k1 = rearrange(k, '(s c) h l -> s c h l', s=2)
-            k = F.pad(k0, (0, Lk)) + F.pad(k1.flip(-1), (Lk, 0))
-               
-        # y = multiply_polynomials(u.unsqueeze(1), k.unsqueeze(0))[..., :L]  # (B 1 H L), (C 1 H Lk) -> (B C H L)
-        n = L + Lk
+            k_neg, k_pos = rearrange(k, '(s c) h l -> s c h l', s=2)  # (C H Lk)
+            k = torch.cat((k_neg.flip(-1), k_pos), dim=-1)            # (C H 2Lk)
+            # K(x) = K_{-Lk}z^{-Lk} + ... + K_{Lk-1}z^{Lk-1}
+            # K(z)u(z) = z^{-Lk} x (K_{-Lk}z^0 + ... K_{Lk-1}z^{2Lk-1}) x (u_{0}z^0 + ... u_{L-1}z^{L-1})
+            offset = Lk  # == left shift by Lk coeffs of (K_{-Lk}z^0 +... K_{Lk-1}z^{2Lk-1}).(u_{0}z^0 +... u_{L-1}z^{L-1})
+        
+        n = u.size(-1) + k.size(-1)
         k_f = torch.fft.rfft(k, n=n)  # (C H ~n/2)
         u_f = torch.fft.rfft(u, n=n)  # (B H ~n/2)
         y_f = contract('bhl,chl->bchl', u_f, k_f) # k_f.unsqueeze(-4) * u_f.unsqueeze(-3) # (B C H L)
-        y = torch.fft.irfft(y_f, n=n)[..., :L] # (B C H L)
-        
+        y = torch.fft.irfft(y_f, n=n)[..., offset:offset+L]  # (B C H L)
+                
         # Compute D term in state space equation - essentially a skip connection
         y = y + contract('bhl,ch->bchl', u, self.D) # u.unsqueeze(-3) * self.D.unsqueeze(-1)
-
+        
         # Optional hyper-network multiplication
         if self.hyper:
             y, yh = rearrange(y, 'b (s c) h l -> s b c h l', s=2)
@@ -663,6 +729,34 @@ class DSS(nn.Module):
     def d_output(self):
         return self.h
 
+    def pretrain(self, L=2**19, num_steps=2000, min_loss=0.5):
+        '''pre-train self.kernel on shifting task'''
+        H = self.channels * self.h
+        device = 'cuda'
+        model = self.kernel.to(device)
+        y = F.one_hot(-1+torch.linspace(L/H, L, H, dtype=torch.long, device=device), L).float()
+        # y = F.one_hot(torch.randint(0, L, size=(H,), dtype=torch.long, device=device), L).float()
+        criterion = nn.MSELoss(reduction='sum')
+        optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
+
+        pbar = tqdm(range(num_steps))
+        for step in pbar:
+            K, _ = model(L=L)        # (C H L)
+            if K.ndim == 3:
+                K = K.view(-1,K.size(-1))  # (C*H L)
+            assert K.shape == (H,L)
+            loss = criterion(K, y)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            pbar.set_description(f'Pretraining kernel layer on shifting task [loss {round(loss.item(), 2)}]')
+            if loss <= min_loss:
+                break
+        
+        self.kernel = model
+        '''TODO : we cant do this for every layer - save the weights and if they match with 
+        '''
+        
 #     def step(self, u, state):
 #         """ Step one time step as a recurrent model. Intended to be used during validation.
 

@@ -5,6 +5,7 @@ resolution: 32
 sequential: True
 tokenize: False
 pool: 1
+all_corners: False
 val_split: 0.1
 test_split: 0.1
 # batch_size: 32

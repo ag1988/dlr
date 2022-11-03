@@ -1,0 +1,47 @@
+# @package _global_
+defaults:
+  - /pipeline: listops-subtrees
+  - /model: dss
+  - override /scheduler: cosine_warmup
+
+dataset:
+  target: SubTreeEvals
+  l_max: 2048
+  l_min: 1500
+  ignore_index: -100
+  
+model:
+  dropout: 0.
+  n_layers: 6
+  prenorm: false
+  d_model: 128
+  norm: layer
+  layer:
+    activation: gelu
+    postact: glu
+    bidirectional: false
+    lr:
+      Lambda: 0.001
+      W: 0.001
+      log_dt: 0.001
+    # dt_min: 0.001
+    # dt_max: 0.01
+
+loader:
+  batch_size: 32
+
+optimizer:
+  lr: 0.001
+  weight_decay: 0.01
+
+scheduler:
+  num_warmup_steps: 5000
+  num_training_steps: 300000   # at this step cos becomes 0 & cycles
+
+trainer:
+  max_epochs: 100
+  save_val_outputs: False
+
+train:
+  seed: 1112
+  

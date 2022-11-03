@@ -130,35 +130,24 @@ class StockDataset(Dataset):
         self,
         cutoffs,                     # datetime ranges (temporal split)
         flag="train",                # data split
-        size=None,                   # [context_len, pred_len]            
-        target="close",
-        mode='diff',                 # instead of predicting target, forecast difference from most recent target
-        freq="t",
+        size=[512-7,7],              # [context_len, pred_len]            
+        target="return",
+        freq="d",
         cols=['year', 'month', 'day', 'weekday', 'hour', 'minute', 
               'high', 'low', 'open', 'close', 'volume', 'return'], # numeric features used for prediction
     ):
-        # size [seq_len, pred_len]
-        if size == None:
-            self.seq_len = 512-7
-            self.pred_len = 7
-        else:
-            self.seq_len = size[0]
-            self.pred_len = size[-1]
-        
-        type_map = {"train": 0, "val": 1, "test": 2}
-        self.set_type = type_map[flag]
-        
+        self.seq_len, self.pred_len = size        
+        self.set_type = {"train": 0, "val": 1, "test": 2}[flag]
         self.cutoffs = cutoffs     
         self.target = target
-        self.mode = mode
         self.freq = freq
         self.cols = cols
     
     def process_columns(self, df_raw):
-        # some other targets that might generalize better
+        df_raw = df_raw.copy()
         close = df_raw['close']
         prev_close = close.shift()
-        df_raw['return'] = (close - prev_close) / prev_close.clip(lower=1e-4)
+        df_raw['return'] = (close - prev_close) / prev_close.clip(lower=1e-5)
         df_raw = df_raw.dropna(inplace=True)
         
         # incude time info
@@ -199,23 +188,23 @@ class StockDataset(Dataset):
         self.data_y = data[:, -1:]   # target : rightmost col
 
     def __getitem__(self, index):
-        # seq_x: sb -----sl----------- se 0 ---pl--- 0
+        # seq_x: sb -----sl----------- se 0 ...pl... 0
         #                      seq_y:  se   ---pl--- re
         s_begin = index
         s_end = s_begin + self.seq_len
         r_end = s_end + self.pred_len
 
         seq_x = self.data_x[s_begin:s_end]
+        
+        # seq_x = self.data_x[s_begin:r_end]
+        # seq_x[s_end:,-1:] = 0  # mask out just the target from future 
+        
+        # TODO: we're masking out all features from future but should keep time features 
         seq_x = np.concatenate(
             [seq_x, np.zeros((self.pred_len, self.data_x.shape[-1]))], axis=0
         )
         
-        if self.mode == 'diff':        
-            assert self.target in self.cols
-            # difference from last known target
-            seq_y = self.data_y[s_end:r_end] - self.data_y[s_end-1]
-        else:
-            seq_y = self.data_y[s_end:r_end]
+        seq_y = self.data_y[s_end:r_end]
         
         seq_x = seq_x.astype(np.float32)
         seq_y = seq_y.astype(np.float32)
@@ -244,8 +233,9 @@ class StocksDataset(ConcatDataset):
         # determine datetime ranges for a temporal data split
         cutoffs = cutoff_dates([dfs_raw[['date']] for df in dfs_raw])
         
-        # add additional features
         stock = StockDataset(cutoffs, **kwargs)
+        
+        # add additional features
         dfs_raw = list(map(stock.process_columns, dfs_raw))
         
         # train a scalar
@@ -299,56 +289,39 @@ class StocksSequenceDataset(SequenceDataset):
         # load cleaned data
         dfs_raw = load_raw_data(self.data_dir, self.max_num_stocks)
         
-        self.dataset_train = self._dataset_cls(
-            dfs_raw,
-            flag="train",
-            size=self.size,
-            target=self.target,
-            scale=self.scale,
-            mode=self.mode,
-            freq=self.freq,
-            cols=self.cols,
-        )
-
-        self.dataset_val = self._dataset_cls(
-            dfs_raw,
-            flag="val",
-            size=self.size,
-            target=self.target,
-            scale=self.scale,
-            mode=self.mode,
-            freq=self.freq,
-            cols=self.cols,
-        )
-
-        self.dataset_test = self._dataset_cls(
-            dfs_raw,
-            flag="test",
-            size=self.size,
-            target=self.target,
-            scale=self.scale,
-            mode=self.mode,
-            freq=self.freq,
-            cols=self.cols,
+        self.dataset_train, self.dataset_val, self.dataset_test = (
+            StocksDataset(
+                dfs_raw,
+                flag="train",
+                size=self.size,
+                target=self.target,
+                scale=self.scale,
+                freq=self.freq,
+                cols=self.cols,
+            ) 
+            for split in ['train', 'val', 'test']
         )
 
 
 class StocksDayForecast(StocksSequenceDataset):
     _name_ = "stocks_1d"
 
-    _dataset_cls = StocksDataset
-
     init_defaults = {
         "data_dir": default_data_path / 'stock' / 'day',
         "max_num_stocks": -1,
         "size": [512-7],   # next 7d forecast based on past 505d
-        "target": "close",
+        "target": "return",
         "scale": True,
-        "mode": 'diff',
-        "freq": "t",
-        "cols": ['year', 'month', 'day', 'weekday', 'high', 'low', 'open', 'close', 'volume', 'return'],
+        "freq": "d",
+        "cols": ['year', 'month', 'day', 'weekday', 'return'],
+        # "cols": ['year', 'month', 'day', 'weekday', 'high', 'low', 'open', 'close', 'volume', 'return'],
     }
 
+
+    
+# CUDA_VISIBLE_DEVICES=0 python -m train wandb=null experiment=s4-stocks-day dataset.max_num_stocks=100 dataset.target='close'
+    
+    
 
 # class StocksHourForecast(StocksSequenceDataset):
 #     _name_ = "stocks_1h"
@@ -383,7 +356,3 @@ class StocksDayForecast(StocksSequenceDataset):
 #         "cols": ['year', 'month', 'day', 'weekday', 'hour', 'minute', 
 #                  'high', 'low', 'open', 'close', 'volume']
 #     }
-
-
-
-# CUDA_VISIBLE_DEVICES=0 python -m train wandb=null experiment=s4-stocks-day dataset.max_num_stocks=100 dataset.target='close'
