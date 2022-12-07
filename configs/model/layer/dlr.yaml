@@ -22,5 +22,7 @@ wd: 0            # wt decay of W
 pykeops: true
 version: ''     # Lambda_imag_W_real
 kernel_to_real: real
+chunk_size: null  # chunk size in case of attention
+attn_ff: 0        # expansion of FF layer at end of attn
 l_max: ${oc.select:dataset.__l_max,1} # Grab dataset length if exists, otherwise set to 1 and kernel will automatically resize
 verbose: false

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 # from torch.utils.data.dataset import IterableDataset
 import numpy as np
+from tqdm.auto import tqdm
 
 
 def concat_pos(x):
@@ -33,31 +34,18 @@ def shift(L=None, num_shifts=None, batch_shape=(), **kwargs):
     return concat_pos(x), y  # (B L 3), (B L H)
 
 
-# def context_shift(L=None, batch_shape=(), **kwargs):
-#     """context dependent shift"""
-#     assert L >= 4
-#     x = torch.randn(batch_shape + (L-2,))              # (B,L-2)                        
-#     F.normalize(x, p=np.inf, dim=-1, out=x)
-#     rshifts = torch.randint(0, L-2, size=batch_shape)  # (B)
-#     kernels = F.one_hot(rshifts, L).float()            # (B L)
-#     rshifts = (2*np.pi*rshifts / L).unsqueeze(-1)      # (B,1)
-#     x = torch.cat((rshifts.cos(), rshifts.sin(), x), dim=-1).unsqueeze(-1)         # (B,L,1)
-#     y = rconv(x.transpose(-1,-2), kernels.unsqueeze(-2))[...,:L].transpose(-1,-2)  # (B L 1)
-#     return concat_pos(x), y  # (B L 3), (B L 1)
-
-
 def context_shift(L=None, batch_shape=(), **kwargs):
     """context dependent shift"""
-    assert L >= 4    
+    assert L >= 4
     x = torch.randn(batch_shape + (L-2,))              # (B,L-2)                        
     F.normalize(x, p=np.inf, dim=-1, out=x)
     rshifts = torch.randint(0, L-2, size=batch_shape)  # (B)
     kernels = F.one_hot(rshifts, L).float()            # (B L)
     rshifts = (2*np.pi*rshifts / L).unsqueeze(-1)      # (B,1)
-    x = torch.cat((rshifts.cos(), rshifts.sin(), x), dim=-1).unsqueeze(-1)     # (B,L,1)
+    x = torch.cat((rshifts.cos(), rshifts.sin(), x), dim=-1).unsqueeze(-1)         # (B,L,1)
     y = rconv(x.transpose(-1,-2), kernels.unsqueeze(-2))[...,:L].transpose(-1,-2)  # (B L 1)
     return concat_pos(x), y  # (B L 3), (B L 1)
-    
+   
     
 def mips(L=None, D=4, causal=True, batch_shape=(), in_device='cuda', out_device='cpu', **kwargs):
     """ L: num of queries/keys/vals (all norm 1)
@@ -78,47 +66,6 @@ def mips(L=None, D=4, causal=True, batch_shape=(), in_device='cuda', out_device=
     x = torch.cat((q,k,v), dim=-1)                            # (B L 3D)
     x = concat_pos(x)                                         # (B L 3D+2)
     return x.to(out_device), y.to(out_device)                 # (B L 3D+2), (B L D)
-
-
-# def masked_select(task=None, L=None, M=None, batch_shape=(), variable=True, consecutive=False, **kwargs):
-#     """ 
-#         L: num noise tokens
-#         M: num memorization tokens
-#         variable: vary positions with batches else positions are same in all batches
-#         consecutive: positions are consecutive
-#     """
-    
-#     if 'fixed' in task: variable = False
-#     assert L > 1 and M > 1
-#     # M toks in randn  L: pad  0: M rightmost pos
-#     tokens = torch.randn(size=batch_shape+(M,))
-#     F.normalize(tokens, p=np.inf, dim=-1, out=tokens)
-        
-#     if consecutive:
-#         # pick M random consecutive pos among first M+L for the above tokens
-#         if variable:
-#             inds = torch.randint(0, L, size=batch_shape+(1,)) + torch.arange(M)
-#         else:
-#             inds = torch.randint(0, L, size=(1,), generator=torch.Generator().manual_seed(0)) + torch.arange(M)
-#             inds = inds.expand(batch_shape+(M,))
-#     else:
-#         # pick M random pos among first M+L for the above tokens
-#         if variable:
-#             inds = torch.rand(batch_shape+(M+L,)).topk(M, dim=-1)[1].sort(-1)[0]
-#         else:
-#             inds = torch.rand(M+L, generator=torch.Generator().manual_seed(0)).topk(M, dim=-1)[1].sort(-1)[0]
-#             inds = inds.expand(batch_shape+(M,))
-    
-#     # place tokens at inds in order
-#     x_toks = torch.zeros(batch_shape+(M+L+M,), dtype=torch.float)
-#     x_toks.scatter_(-1, inds, tokens)
-#     markers = torch.zeros(batch_shape+(M+L+M,), dtype=torch.float)
-#     markers.scatter_(-1, inds, 1)
-    
-#     x = torch.stack([x_toks, markers], dim=-1)  # (B M+L+M 2)
-#     x = concat_pos(x)                           # (B M+L+M 4)
-#     y = tokens.unsqueeze(-1)
-#     return x, y   # (B M+L+M 4), (B M 1)
 
 
 def masked_select(task=None, L=None, M=None, batch_shape=(), variable=True, consecutive=False, **kwargs):
@@ -159,6 +106,31 @@ def masked_select(task=None, L=None, M=None, batch_shape=(), variable=True, cons
     return x, y   # (B M+L+M 4), (B M 1)
 
 
+def solve(task=None, L=None, batch_shape=(), variable=True, **kwargs):
+    N = int(np.max(np.roots([1, 2, -L])))
+    assert N**2 + N + N <= L
+   
+    if 'fixed' in task: variable = False
+    # sample orthogonal linear system
+    if variable:
+        A = torch.randn(batch_shape + (N,N))    # (B N N)
+    else:
+        A = torch.randn((N,N), generator=torch.Generator().manual_seed(0))     # (N N)
+        A = A.view((1,)*len(batch_shape) + (N,N)).expand(batch_shape + (N,N))  # (B N N)
+    
+    U, _, Vh = torch.linalg.svd(A, full_matrices=False)
+    A = U.matmul(Vh)                                           # A.A^T == I
+    
+    X = F.normalize(torch.randn(batch_shape + (N,1)), dim=-2)  # (B N 1)
+    B = A.matmul(X)  # AX == B                                 # (B N 1)
+    
+    AB = torch.cat((A, B), dim=-1)                             # (B N N+1)
+    x = AB.view(*AB.shape[:-2], -1)                            # (B N**+N)
+    x = F.pad(x, (0,L-x.size(-1))).unsqueeze(-1)               # (B L 1)
+    y = X
+    return concat_pos(x), y                                    # (B L 3), (B N 1)
+
+
 def atomic(L=None, task=None, batch_shape=(), **kwargs):
     """ output len is 2L
     """
@@ -176,7 +148,8 @@ def atomic(L=None, task=None, batch_shape=(), **kwargs):
         y = seq.flip(-1)
     elif task == 'sort':
         x = F.pad(seq, (0,L))
-        y = seq.sort(-1).values
+        y = seq.gather(-1, (seq-seq[...,:1]).abs().sort(dim=-1, stable=True)[1])
+        # y = seq.sort(stable=True)[0]*(seq[...,:1] <= 0).float() + seq.sort(stable=True, descending=True)[0]*(seq[...,:1] > 0).float()
     else:
         assert False, f'{task}'
 
@@ -194,6 +167,8 @@ def torch_sequence1d_data(task=None, **kwargs):
         return mips(**kwargs)
     if 'masked_select' in task:
         return masked_select(task=task, **kwargs)
+    if 'solve' in task:
+        return solve(task=task, **kwargs)
     return atomic(task=task, **kwargs)
 
 
@@ -211,18 +186,8 @@ class Sequence1dTrainDataset(torch.utils.data.IterableDataset):
         else:
             for _ in range(self.samples_per_epoch):
                 x, y = torch_sequence1d_data(batch_shape=(), **self.kwargs)
-                yield x, y
-
-
-class Sequence1dEvalDataset(torch.utils.data.TensorDataset):
-    def __init__(self, samples=-1, **kwargs):
-        assert samples > 0
-        all_x, all_y = torch_sequence1d_data(batch_shape=(samples,), **kwargs)
-        super().__init__(all_x, all_y)
-
-        
-        
-        
+                yield x, y                
+                
         
 # import nengo
 

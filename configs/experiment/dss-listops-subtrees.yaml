@@ -6,8 +6,8 @@ defaults:
 
 dataset:
   target: SubTreeEvals
-  l_max: 2048
-  l_min: 1500
+  l_max: 8192
+  l_min: 7000
   ignore_index: -100
   
 model:
@@ -24,8 +24,9 @@ model:
       Lambda: 0.001
       W: 0.001
       log_dt: 0.001
-    # dt_min: 0.001
-    # dt_max: 0.01
+    dt_min: 0.0001
+    dt_max: 0.1
+    d_state: 1024
 
 loader:
   batch_size: 32

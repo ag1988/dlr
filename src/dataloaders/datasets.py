@@ -605,7 +605,7 @@ class Sequence1d(SequenceDataset):
         }
 
     def setup(self):
-        from .sequence1d import Sequence1dTrainDataset, Sequence1dEvalDataset
+        from .sequence1d import Sequence1dTrainDataset
         
         kwargs = {'L': self.L, 
                   'task': self.task, 
@@ -633,6 +633,9 @@ class Sequence1d(SequenceDataset):
             self.d_input, self.d_output, self.l_output = 4, 1, self.M
         elif self.task == 'mips':
              self.d_input, self.d_output, self.l_output = 3*self.D+2, self.D, self.L
+        elif 'solve' in self.task:
+            N = int(np.max(np.roots([1, 2, -self.L])))
+            self.d_input, self.d_output, self.l_output = 3, 1, N
         else:
             self.d_input, self.d_output, self.l_output = 3, 1, self.L
         
@@ -1461,6 +1464,8 @@ class PathFinderSegmentation(SequenceDataset):
     
     @property
     def d_input(self):
+        if self.pos_info:
+            return 4+2 if self.all_corners else 1+2
         return 4 if self.all_corners else 1
 
     @property
@@ -1480,6 +1485,7 @@ class PathFinderSegmentation(SequenceDataset):
             "val_split": 0.1,
             "test_split": 0.1,
             "seed": 42,  # Controls the train/val/test split
+            "pos_info": False,
         }
 
     def init(self):
@@ -1496,6 +1502,15 @@ class PathFinderSegmentation(SequenceDataset):
         assert x.ndim >= 3
         rotations = [x] + [torchvision.transforms.functional.rotate(x, 90*i) for i in range(1,4)]
         return torch.cat(rotations, dim=dim)
+    
+    def concat_pos(self, x):
+        """ append in last dim the position info of second-last dim 
+        """
+        L = x.shape[-2]                         # (... L d)
+        pos = (2*np.pi*torch.arange(L, device=x.device) / L).view(-1,1)
+        cos = torch.zeros_like(x[...,:1]) + pos.cos()
+        sin = torch.zeros_like(x[...,:1]) + pos.sin()
+        return torch.cat((x,cos,sin), dim=-1)   # (... L d+2)
     
     def zero_pad_right(self, x, dim=-2):
         assert dim < 0
@@ -1529,6 +1544,8 @@ class PathFinderSegmentation(SequenceDataset):
                 if self.tokenize and not self.all_corners
                 else Rearrange("r h w -> (h w) r")
             )
+            if not self.tokenize and self.pos_info:
+                transform_list.append(self.concat_pos)
             if self.autoregressive:
                 transform_list.append(
                     partial(self.zero_pad_right, dim=-1) 

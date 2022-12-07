@@ -1,0 +1,15 @@
+_name_: sgconv
+d_state: 8                # use 4096 to model very long L
+bidirectional: false
+n_scales: null
+activation: gelu
+postact: null
+hyper_act: null
+dropout: ${..dropout} # Same as null
+alpha_min: 0.3
+alpha_max: 1
+max_kernel_length: null
+kernel_type: sgconv
+w_scale: null    # default 1/d_state
+l_max: ${oc.select:dataset.__l_max,1} # Grab dataset length if exists, otherwise set to 1 and kernel will automatically resize
+verbose: false

@@ -1,5 +1,5 @@
 """
-Adapted from https://github.com/drewlinsley/pathfinder .
+Adapted from https://github.com/drewlinsley/pathfinder
 """
 
 import numpy as np

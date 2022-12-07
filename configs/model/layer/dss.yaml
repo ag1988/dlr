@@ -15,11 +15,12 @@ lr:
     log_dt: 0.001
     Lambda: 0.001
     W: 0.001
-sep_dt_re_im: true
+sep_dt_re_im: false
 max_kernel_length: null
 kernel_type: dss
 Lambda_init: hippo_skew_pos_imag
-version: softmax
+version: exp
+wd: 0            # wt decay of W
 max_real_Lambda: 0.0001
 kernel_to_real: real
 l_max: ${oc.select:dataset.__l_max,1} # Grab dataset length if exists, otherwise set to 1 and kernel will automatically resize

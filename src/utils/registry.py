@@ -43,6 +43,7 @@ layer = {
     "standalone": "src.models.sequence.ss.standalone.s4.S4",
     "dss": "src.models.sequence.ss.standalone.dss.DSS",
     "dlr": "src.models.sequence.ss.standalone.dss.DSS",
+    "sgconv": "src.models.sequence.ss.standalone.dss.DSS",
     "ff": "src.models.sequence.ff.FF",
     "rnn": "src.models.sequence.rnns.rnn.RNN",
     "mha": "src.models.sequence.mha.MultiheadAttention",
