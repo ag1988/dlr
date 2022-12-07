@@ -4,6 +4,7 @@ This repository is built on a fork of the official [S4 repo](https://github.com/
 
 > **Diagonal State Spaces are as Effective as Structured State Spaces**\
 > Ankit Gupta, Albert Gu, Jonathan Berant\
+> NeurIPS 2022 (Spotlight)\
 > Paper: https://arxiv.org/pdf/2203.14343
 
 ## Table of Contents
@@ -349,8 +350,9 @@ If you use this codebase, or otherwise found our work valuable, please cite:
 ```
 @article{gupta2022dss,
   title={Diagonal State Spaces are as Effective as Structured State Spaces},
-  author={Gupta, Ankit},
-  journal={arXiv preprint arXiv:2203.14343},
+  author={Gupta, Ankit and Gu, Albert and Berant, Jonathan},
+  journal={Advances in neural information processing systems},
+  volume={35},
   year={2022}
 }
 
