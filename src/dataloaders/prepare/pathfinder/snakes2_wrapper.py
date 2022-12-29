@@ -66,8 +66,8 @@ class Args:
         self.continuity = continuity
         self.paddle_length = paddle_length
         self.paddle_thickness = paddle_thickness
-        self.paddle_margin_list = paddle_margin_list # if multiple elements in a list, a number will be sampled in each IMAGE
-        self.paddle_contrast_list = paddle_contrast_list # if multiple elements in a list, a number will be sampled in each PADDLE
+        self.paddle_margin_list = paddle_margin_list  # if multiple elements in a list, a number will be sampled in each IMAGE
+        self.paddle_contrast_list = paddle_contrast_list  # if multiple elements in a list, a number will be sampled in each PADDLE
 
         self.pause_display = pause_display
         self.save_images = save_images
@@ -90,15 +90,15 @@ if len(sys.argv) > 1:
 # ----- 128 x 128 -----
 # dataset_root = './data/pathfinder128_segmentation/'
 # args.padding = 1
-# args.paddle_margin_list = [2,3]  # gap between dashes
-# args.seed_distance = 22          # distance between main segments - ambiguous if too small
+# args.paddle_margin_list = [2,3]   # gap between dashes
+# args.seed_distance = 22           # distance between main segments - ambiguous if too small
 # args.window_size = [128,128]
 # args.marker_radius = 2.1
 # args.contour_length = 14
-# args.paddle_thickness = 1.5    # dash thickness
+# args.paddle_thickness = 1.5       # dash thickness
 # args.antialias_scale = 2
-# args.continuity = 1.8          # spread of paths - if small, paths curve quickly
-# args.paddle_length = 5         # dash len
+# args.continuity = 1.8             # spread of paths - if small, paths curve quickly
+# args.paddle_length = 5            # dash len
 # args.distractor_length = args.contour_length // 3   # changed to // 3 to avoid error at range()
 # args.num_distractor_snakes = 64 / args.distractor_length  # LRA says 35 / args.distractor_length but seems inaccurate
 # args.snake_contrast_list = [0.9]  # how much darker are dashes compared to markers
@@ -121,7 +121,7 @@ if len(sys.argv) > 1:
 # args.distractor_length = args.contour_length // 3
 # args.num_distractor_snakes = 16
 # args.snake_contrast_list = [1.0]
-# args.contour_path = dataset_root  # os.path.join(dataset_root, f'curv_contour_length_{args.contour_length}')
+# args.contour_path = dataset_root  
 # args.paddle_length = 8
 # args.mark_distractors = True
 # snakes2.from_wrapper(args)
@@ -142,11 +142,16 @@ if len(sys.argv) > 1:
 # args.distractor_length = args.contour_length // 3
 # args.num_distractor_snakes = 18
 # args.snake_contrast_list = [1.0]  
-# args.contour_path = dataset_root  # os.path.join(dataset_root, f'curv_contour_length_{args.contour_length}')
+# args.contour_path = dataset_root  
 # args.paddle_length = 22
 # args.mark_distractors = True
 # snakes2.from_wrapper(args)
 # 40 hrs per 2500 per cpu
 
 
-# python snakes2_wrapper.py 0 10 
+
+
+'''
+Example usage:
+python snakes2_wrapper.py 0 10 
+'''

@@ -1,3 +1,7 @@
+"""
+Atomic tasks used in DLR (https://arxiv.org/abs/2212.00768).
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -125,7 +129,7 @@ def solve(task=None, L=None, batch_shape=(), variable=True, **kwargs):
     B = A.matmul(X)  # AX == B                                 # (B N 1)
     
     AB = torch.cat((A, B), dim=-1)                             # (B N N+1)
-    x = AB.view(*AB.shape[:-2], -1)                            # (B N**+N)
+    x = AB.view(*AB.shape[:-2], -1)                            # (B N^2+N)
     x = F.pad(x, (0,L-x.size(-1))).unsqueeze(-1)               # (B L 1)
     y = X
     return concat_pos(x), y                                    # (B L 3), (B N 1)

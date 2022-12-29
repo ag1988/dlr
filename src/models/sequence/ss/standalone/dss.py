@@ -593,7 +593,7 @@ class SGConvKernel(nn.Module):
         H, 
         N=8, 
         n_scales=None,
-        l_max=None,             # currently unused
+        l_max=None,             
         channels=1,
         alpha_min=0.5,
         alpha_max=1,

@@ -1,109 +1,160 @@
-## Diagonal State Spaces (DSS)
+## Diagonal Linear RNNs (DLR)
 
-This repository is built on a fork of the official [S4 repo](https://github.com/HazyResearch/state-spaces) & contains the accompanying code for the paper:
+This repository is built on a fork of an older version of [S4 repo](https://github.com/HazyResearch/state-spaces) & contains the accompanying code for the paper:
 
-> **Diagonal State Spaces are as Effective as Structured State Spaces**\
-> Ankit Gupta, Albert Gu, Jonathan Berant\
-> NeurIPS 2022 (Spotlight)\
-> Paper: https://arxiv.org/pdf/2203.14343
+> **Simplifying and Understanding State Space Models with Diagonal Linear RNNs**\
+> Ankit Gupta, Harsh Mehta, Jonathan Berant\
+> Paper: https://arxiv.org/abs/2212.00768
+
+For info about the general structure of the repo please refer to the S4 repo. In the following we primarily describe how to reproduce the experiments in the paper.
 
 ## Table of Contents
 - [Setup](#setup)
-- [DSS Experiments](#dss-experiments)
-- [S4 & Further Details](#s4_)
+- [DLR Experiments](#dlr-experiments)
 
 ## Setup <a name="setup"></a>
 
 ### Requirements
-This repository requires Python 3.8+ and [Pytorch 1.9+](https://pytorch.org/get-started/locally/).
+This repo requires Python 3.8+ and [Pytorch 1.9+](https://pytorch.org/get-started/locally/).
 After installing PyTorch, other packages can be installed via `pip install -r requirements.txt`.
 
-If you'll only be using DSS, installing `pykeops` & the Cauchy kernels from [S4 repo](https://github.com/HazyResearch/state-spaces) is optional. But we strongly recommend following all installation instructions on S4 repo & installing these as they're required for S4.
+We strongly recommend installing [pykeops](https://www.kernel-operations.io/keops/index.html) as some experiments are on very long inputs and we need this library for memory efficiency.
 
-Note however that results reported in our paper can vary with the version of the installed libraries, especially Pytorch 1.11+. In case you're unable to reproduce our results using the above instructions, please create a new environment `dss` as follows and retry: 
+Results reported in the paper can vary with the version of the installed libraries, especially Pytorch 1.11+. In case you're unable to reproduce our results using the above instructions, please create a new environment `dlr` as follows and retry:
 ```bash
 conda deactivate
-conda env create -f conda-environment.yaml
-source activate dss
+conda env create -f dlr-conda-env.yml
+source activate dlr
 ```
-
 
 ### Data
 
 #### Datasets and Dataloaders
 All logic for creating and loading datasets is in `src/dataloaders`.
-This folder may include old and experimental datasets.
-The datasets that we consider core are located in `src/dataloaders/datasets.py`.
+The data loaders we consider core are located in `src/dataloaders/datasets.py`.
 
 
 #### Data
 The raw data should be organized as follows.
-The data path can be configured by the environment variable `DATA_PATH`, or defaults to `./data` by default, where `.` is the top level directory of this repository (e.g. `dss` or `state-spaces`).
+The data path can be configured by the environment variable `DATA_PATH`, or defaults to `./data` by default, where `.` is the top level directory of this repository (e.g. `dlr`).
 
-Most of the dataloaders download their datasets automatically if not found.
-External datasets include Long Range Arena (LRA), which can be downloaded from their [GitHub page](https://github.com/google-research/long-range-arena),
-and the WikiText-103 language modeling dataset, which can be downloaded by the `getdata.sh` script from the [Transformer-XL codebase](https://github.com/kimiyoung/transformer-xl).
+#### Data Generation
 
-E.g. LRA can be downloaded/extracted as:
-```bash
-wget https://storage.googleapis.com/long-range-arena/lra_release.gz
-tar -xvf lra_release.gz
-```
+Atomic tasks such as Shift, Reverse, etc automatically generate data in every batch (see `./src/dataloaders/sequence1d.py`) and you dont need to generate data for these.
 
-These external datasets should be organized as follows:
+`ListOpsSubTrees`: You can generate data as described [here](./src/dataloaders/prepare/listops/README.md).  
+
+`PathfinderSegmentation`: You can generate data as described [here](./src/dataloaders/prepare/pathfinder/README.md).
+
+After generating the data, it should be organized as follows:
 ```
 DATA_PATH/
-  pathfinder/
-    pathfinder32/
-    pathfinder64/
-    pathfinder128/
-    pathfinder256/
-  aan/
-  listops/
-  wt103/
+  pathfinder_segmentation/
+    pathfinder128_segmentation/
+    pathfinder256_segmentation/
+    pathfinder512_segmentation/
+  listops_subtrees/
 ```
-Fine-grained control over the data directory is allowed, e.g. if the LRA ListOps files are located in `/home/lra/listops-1000/`, you can pass in `+dataset.data_dir=/home/lra/listops-1000` on the command line.
 
+## DLR Experiments <a name="dlr-experiments"></a>
 
-## DSS Experiments <a name="dss-experiments"></a>
+This section describes how to use the DLR/DSS/Attention models & reproduce the experiments. The DLR model is defined in this standalone [file](./src/models/sequence/ss/standalone/dss.py).
 
-This section describes how to use the latest DSS model & reproduce the experiments.
-More detailed descriptions of the infrastructure are in later sections.
-
-The `DSS` layer is provided in a self-contained file `src/models/sequence/ss/standalone/dss.py`. You must explicitly provide the flag `model=dss` to each command as shown below.
-
-### Quick Testing
-
-For quick testing, we frequently use synthetic datasets or the Permuted MNIST dataset.
-This can be run with `CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dss pipeline=mnist`, which should get to around 90% after 1 epoch which takes 1-3 minutes depending on GPU.
-
-
-### Long Range Arena (LRA)
+You must explicitly provide the model flag (e.g. `model=dlr`) to each command as shown below.
 
 ```bash
-python -m train wandb=null model=dss experiment=s4-lra-listops model.layer.lr.log_dt=0.02
-python -m train wandb=null model=dss experiment=s4-lra-imdb model.layer.lr.log_dt=0.02
-python -m train wandb=null model=dss experiment=s4-lra-aan
-python -m train wandb=null model=dss experiment=s4-lra-cifar trainer.max_epochs=200 train.seed=0
-python -m train wandb=null model=dss experiment=s4-lra-pathfinder scheduler.patience=13
-python -m train wandb=null model=dss experiment=s4-lra-pathx model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.lr.log_dt=0.0001 loader.batch_size=16 trainer.max_epochs=35
+# --- pathfindersegmentation 128 ---
+
+# DLR
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null  experiment=dss-pathfinder-segmentation model.n_layers=5 model=dlr model.layer.version='' model.layer.dt_min=0.0001 model.layer.dt_max=0.1 model.layer.lr.Lambda=0.0001 model.layer.lr.W=0.0001 model.layer.d_state=1024 optimizer.lr=0.0001 loader.batch_size=16 model.layer.max_kernel_length=8192
+
+# DSS-EXP
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null  experiment=dss-pathfinder-segmentation model.n_layers=5 model=dss model.layer.Lambda_init='lin' model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.d_state=1024 optimizer.lr=0.001 model.layer.lr.Lambda=0.001 model.layer.lr.W=0.001 model.layer.lr.log_dt=0.001  loader.batch_size=16 model.layer.max_kernel_length=8192
+
+# LocalAttention
+CUDA_VISIBLE_DEVICES=0,1 python -m train wandb=null  experiment=dss-pathfinder-segmentation model.n_layers=5 model=dlr model.layer.kernel_type=attn optimizer.lr=0.001 model.layer.chunk_size=1024 loader.batch_size=8 trainer.gpus=2 trainer.find_unused_parameters=false 
+
+
+# --- pathfindersegmentation 256 ---
+
+# DLR - 3 x 3090's
+CUDA_VISIBLE_DEVICES=0,1,2 python -m train wandb=null experiment=dss-pathfinder-segmentation-256 model.n_layers=6 model=dlr model.layer.version='' model.layer.dt_min=0.0001 model.layer.dt_max=0.1 model.layer.lr.Lambda=0.00005 model.layer.lr.W=0.00005 model.layer.d_state=1024 optimizer.lr=0.00005 loader.batch_size=6 model.layer.max_kernel_length=32768 trainer.gpus=3 trainer.find_unused_parameters=false trainer.save_val_outputs=false 
+
+# DSS-EXP - 3 x 3090's
+CUDA_VISIBLE_DEVICES=0,1,2 python -m train wandb=null experiment=dss-pathfinder-segmentation-256 model.n_layers=6 model=dss model.layer.Lambda_init='lin' model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.d_state=1024 optimizer.lr=0.0005 model.layer.lr.Lambda=0.0005 model.layer.lr.W=0.0005 model.layer.lr.log_dt=0.0005  loader.batch_size=6 model.layer.max_kernel_length=32768 trainer.gpus=3 trainer.find_unused_parameters=false trainer.save_val_outputs=false 
+
+
+# --- pathfindersegmentation 512 ---
+
+# DLR - 7 x V100s
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 python -m train  wandb=null experiment=dss-pathfinder-segmentation-512 model.n_layers=12 model=dlr model.layer.version='' model.layer.dt_min=0.0001 model.layer.dt_max=0.1 model.layer.lr.Lambda=0.00001 model.layer.lr.W=0.00001 model.layer.d_state=2048 optimizer.lr=0.00001 loader.batch_size=2 model.layer.max_kernel_length=32768 trainer.gpus=7 trainer.find_unused_parameters=false trainer.save_val_outputs=false model.d_model=64
+
+# DSS-EXP - 7 x V100s
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 python -m train  wandb=null experiment=dss-pathfinder-segmentation-512 model.n_layers=12 model=dss model.layer.Lambda_init='lin' model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.lr.Lambda=0.0001 model.layer.lr.W=0.0005 model.layer.d_state=2048 optimizer.lr=0.0005 model.layer.lr.log_dt=0.0005 loader.batch_size=2 model.layer.max_kernel_length=32768 trainer.gpus=7 trainer.find_unused_parameters=false trainer.save_val_outputs=false model.d_model=64
+
+
+# --- listopssubtrees ---
+
+# DLR
+CUDA_VISIBLE_DEVICES=0 python -m train  wandb=null experiment=dss-listops-subtrees model=dlr model.layer.version='' model.layer.dt_min=0.0001 model.layer.dt_max=0.1 model.layer.lr.Lambda=0.0008 model.layer.lr.W=0.0008  model.layer.d_state=1024 optimizer.lr=0.0008 loader.batch_size=32 dataset.l_min=7000  dataset.l_max=8192 trainer.save_val_outputs=false
+
+# DSS-EXP
+CUDA_VISIBLE_DEVICES=0 python -m train  wandb=null experiment=dss-listops-subtrees model=dss model.layer.Lambda_init='lin' model.layer.dt_min=0.0001 model.layer.dt_max=0.01 model.layer.d_state=1024 optimizer.lr=0.001 model.layer.lr.Lambda=0.001 model.layer.lr.W=0.001 model.layer.lr.log_dt=0.001 loader.batch_size=32 dataset.l_min=7000  dataset.l_max=8192 trainer.save_val_outputs=false
+
+# LocalAttention
+CUDA_VISIBLE_DEVICES=0 python -m train  wandb=null experiment=dss-listops-subtrees model=dlr model.layer.kernel_type=attn loader.batch_size=32 dataset.l_min=7000  dataset.l_max=8192 trainer.save_val_outputs=false optimizer.lr=0.001 model.layer.chunk_size=1024
 ```
 
-### Speech Commands
-
-The Speech Commands dataset modified as a [smaller](https://arxiv.org/abs/2005.08926) [10-way](https://arxiv.org/abs/2102.02611) classification task.
+Experiments with atomic tasks can be run as follows.
 
 ```bash
-python -m train wandb=null model=dss experiment=s4-sc
+# in the following $TASK can be one of "shift" "cumsum" "cummax" "sort" "reverse" "masked_select_fixed" "masked_select" "solve_fixed" "solve" "context_shift"
+
+# DLR single layer, input len 4096
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dlr experiment=dss-sequence1d dataset.task=$TASK model.layer.version=''  model.layer.dt_min=0.00001 model.layer.d_state=4096  model.layer.dt_max=0.00001 model.layer.kernel_to_real=real dataset.L=4096 dataset.samples_per_epoch=16000 loader.batch_size=16 optimizer.lr=0.0001 model.layer.lr.Lambda=0.0001 model.layer.lr.W=0.0001 model.n_layers=1
+
+# Attention single layer, input len 4096
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dlr experiment=dss-sequence1d dataset.task=$TASK model.layer.kernel_type=attn dataset.L=4096 dataset.samples_per_epoch=16000 loader.batch_size=16 optimizer.lr=0.001 model.layer.attn_ff=0
+
+# DSS-EXP single layer, input len 4096
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dss experiment=dss-sequence1d dataset.task=$TASK model.layer.Lambda_init='lin' model.layer.dt_min=0.0001 model.layer.d_state=4096  model.layer.dt_max=0.01 model.layer.kernel_to_real=real dataset.L=4096 dataset.samples_per_epoch=16000 loader.batch_size=16 optimizer.lr=0.001 model.layer.lr.Lambda=0.001 model.layer.lr.W=0.001 model.layer.lr.log_dt=0.001 model.n_layers=1
+
+# DLR 6 layers, input len 4096
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dlr experiment=dss-sequence1d dataset.task=$TASK model.layer.version=''  model.layer.dt_min=0.00001 model.layer.d_state=4096  model.layer.dt_max=0.00001 model.layer.kernel_to_real=real dataset.L=4096 dataset.samples_per_epoch=16000 loader.batch_size=16 optimizer.lr=0.0001 model.layer.lr.Lambda=0.0001 model.layer.lr.W=0.0001 model.n_layers=6
+
+# Attention 2 layers, input len 512
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dlr experiment=dss-sequence1d dataset.task=$TASK model.layer.kernel_type=attn dataset.L=512 dataset.samples_per_epoch=16000 loader.batch_size=64 optimizer.lr=0.001 model.n_layers=2 model.layer.attn_ff=0
+
+# DLR 6 layers, input len 512
+CUDA_VISIBLE_DEVICES=$i python -m train wandb=null model=dlr experiment=dss-sequence1d dataset.task=$TASK model=dlr model.layer.version=''  model.layer.dt_min=0.00001 model.layer.d_state=4096  model.layer.dt_max=0.00001 model.layer.kernel_to_real=real dataset.L=512 dataset.samples_per_epoch=16000 loader.batch_size=64 optimizer.lr=0.00005 model.layer.lr.Lambda=0.00005 model.layer.lr.W=0.00005 model.n_layers=6
 ```
 
-#### DSS: test accuracy (at best validation checkpoint) & training time on single A100:
-|            | listops  | imdb |  aan  | lra-cifar | pathfinder | pathx |  sc  |
-| ---        |    ---   |  --- |  ---  |   ---     |    ---     |  ---  | ---  |
-| **acc**    | 60.6     | 84.8 |  87.8 | 85.7      | 84.6       | 87.8  | 97.7 |
-| **time**   | 2h       |  20m |  9h   |  6h       |  9h        |  40h  | 19h  |
+```bash 
+# --- MIPS ---
 
-On Path-X, loss should start decreasing around global step 90k (10h).
+# DLR single layer, input len 4096
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dlr experiment=dss-sequence1d dataset.task=mips model=dlr model.layer.version=''  model.layer.dt_min=0.00001 model.layer.d_state=4096  model.layer.dt_max=0.00001 model.layer.kernel_to_real=real dataset.L=4096 dataset.samples_per_epoch=64000 loader.batch_size=4 optimizer.lr=0.0001 model.layer.lr.Lambda=0.0001 model.layer.lr.W=0.0001 model.n_layers=1 loader.num_workers=0
+
+# DSS-EXP single layer, input len 4096
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dss experiment=dss-sequence1d dataset.task=mips model.layer.Lambda_init='lin' model.layer.dt_min=0.0001 model.layer.d_state=4096  model.layer.dt_max=0.01 model.layer.kernel_to_real=real dataset.L=4096 dataset.samples_per_epoch=64000 loader.batch_size=4 optimizer.lr=0.001 model.layer.lr.Lambda=0.001 model.layer.lr.W=0.001 model.layer.lr.log_dt=0.001 model.n_layers=1 loader.num_workers=0 
+
+# Attention single layer, input len 4096
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null model=dlr experiment=dss-sequence1d dataset.task=mips model.layer.kernel_type=attn dataset.L=4096 dataset.samples_per_epoch=64000 loader.batch_size=4 optimizer.lr=0.0001 model.n_layers=1 loader.num_workers=0
+```
+
+Shift task with long inputs.
+```bash
+# in the following $L can be any one of 16384  65536  262144  1048576
+
+# DLR single layer  (for DLR-prod use model.layer.kernel_to_real=prod)
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null experiment=dss-sequence1d dataset.task=shift model=dlr model.layer.version='' model.layer.d_state=4096 model.layer.dt_min=0.00001 model.layer.dt_max=0.00001 model.layer.kernel_to_real=real dataset.L=$L dataset.samples_per_epoch=8000 loader.batch_size=4 optimizer.lr=0.00001 model.layer.lr.Lambda=0.00001 model.layer.lr.W=0.00001 model.d_model=32
+
+# DSS-EXP single layer
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null experiment=dss-sequence1d model=dss dataset.task=shift model.layer.Lambda_init='lin' model.layer.dt_min=0.0001 model.layer.d_state=4096  model.layer.dt_max=0.01 model.layer.kernel_to_real=real dataset.L=$L dataset.samples_per_epoch=8000 loader.batch_size=4 optimizer.lr=0.001 model.layer.lr.Lambda=0.001 model.layer.lr.W=0.001 model.layer.lr.log_dt=0.001 model.n_layers=1 model.d_model=32
+
+# SGConv single layer
+CUDA_VISIBLE_DEVICES=0 python -m train wandb=null experiment=dss-sequence1d dataset.task=shift model=sgconv model.layer.d_state=4096 model.layer.alpha_min=1 model.layer.alpha_max=1 model.layer.l_max=$L dataset.L=$L dataset.samples_per_epoch=8000 loader.batch_size=4 optimizer.lr=0.00001 model.d_model=32
+```
 
 
 #### Tuning
@@ -127,139 +178,6 @@ python -m train wandb=null model=dss experiment=s4-lra-pathx loader.batch_size=8
 Currently during grad accumulation, same kernel is computed for *every* sub-batch which is wasteful. Caching of kernels will be fixed in the future.
 
 
-## S4  <a name="s4_"></a>
-
-
-## Table of Contents
-- [S4 Setup](#s4-setup)
-- S4
-  - [Experiments](#s4-experiments)
-  - [Training](#training)
-  - [Models](#models)
-- [SaShiMi](sashimi/README.md#sashimi)
-- [Repository Structure](#overall-repository-structure)
-- [Citation](#citation)
-
-## S4 Setup  <a name="s4-setup"></a>
-
-### Cauchy Kernel
-
-A core operation of S4 is the "Cauchy kernel" described in the [paper](https://arxiv.org/abs/2111.00396).
-The implementation of this requires one of two methods:
-
-#### Custom CUDA Kernel
-
-This version is faster but requires manual compilation on each machine.
-Run `python setup.py install` from the directory `extensions/cauchy/`.
-
-#### Pykeops
-
-This version is provided by the [pykeops library](https://www.kernel-operations.io/keops/index.html).
-Installation usually works out of the box with `pip install pykeops cmake` which are provided in the requirements file.
-
-Note that running in a Colab requires installing a different pip package; instructions can be found in the pykeops documentation.
-
-## S4 Experiments
-
-This section describes how to use the latest S4 model and reproduce experiments immediately.
-More detailed descriptions of the infrastructure are in the subsequent sections.
-
-### Structured State Space (S4)
-
-The S4 module is found at
-`src/models/sequence/ss/s4.py`.
-
-For users who would like to import a single file that has the self-contained S4 layer,
-a standalone version can be found at `src/models/sequence/ss/standalone/s4.py`.
-
-### Testing
-
-For testing, we frequently use synthetic datasets or the Permuted MNIST dataset.
-This can be run with `python -m train wandb=null pipeline=mnist model=s4`, which should get to around 90% after 1 epoch which takes 1-3 minutes depending on GPU.
-
-### Long Range Arena (LRA)
-
-```
-python -m train wandb=null experiment=s4-lra-listops
-python -m train wandb=null experiment=s4-lra-imdb
-python -m train wandb=null experiment=s4-lra-cifar
-python -m train wandb=null experiment=s4-lra-aan
-python -m train wandb=null experiment=s4-lra-pathfinder
-python -m train wandb=null experiment=s4-lra-pathx
-```
-
-Note that these experiments may take different amounts of time to train. IMDB should take 1-2 hours, while Path-X will take several epochs to take off and take over a day to train to completion.
-
-### CIFAR-10
-
-```
-python -m train wandb=null experiment=s4-cifar
-```
-
-The above command line reproduces our best sequential CIFAR model. Decreasing the model size should yield close results, e.g. decreasing the hidden dimension and number of layers with `model.d_model=512 model.n_layers=4`.
-
-### Speech Commands
-
-The Speech Commands dataset that our [baselines](https://arxiv.org/abs/2005.08926) [use](https://arxiv.org/abs/2102.02611) is a modified smaller 10-way classification task.
-
-```
-python -m train wandb=null experiment=s4-sc
-```
-
-To use the original version with the full 35 classes, pass in `dataset.all_classes=true`
-
-### WikiText-103
-
-```
-python -m train wandb=null experiment=s4-wt103
-```
-
-The default settings require 8 GPUs with 32GB memory. Modifications can be made by decreasing batch size and accumulating gradients, e.g. `loader.batch_size=4 trainer.accumulate_grad_batches=2`
-
-
-### Optimizer Hyperparameters
-
-One notable difference in this codebase is that some S4 parameters use different optimizer hyperparameters. In particular, the SSM kernel is particularly sensitive to the A, B, and dt parameters, so the optimizer settings for these parameters are usually fixed to learning rate 0.001 and weight decay 0.
-
-Our logic for setting these parameters can be found in the `OptimModule` class under `src/models/sequence/ss/kernel.py` and the corresponding optimizer hook in `SequenceLightningModule.configure_optimizers` under `train.py`.
-
-## Training
-
-The core training infrastructure of this repository is based on [Pytorch-Lightning](https://pytorch-lightning.readthedocs.io/en/latest/) with a configuration scheme based on [Hydra](https://hydra.cc/docs/intro/).
-The structure of this integration largely follows the Lightning+Hydra integration template described in https://github.com/ashleve/lightning-hydra-template.
-
-The main experiment entrypoint is `train.py` and configs are found in `configs/`.
-In brief, the main config is found at `configs/config.yaml`, which is combined with other sets of configs that can be passed on the command line, to define an overall YAML config.
-Most config groups define one single Python object (e.g. a PyTorch nn.Module).
-The end-to-end training pipeline can broken down into the following rough groups, where group XX is found under `configs/XX/`:
-```
-model: the sequence-to-sequence model backbone (e.g. a src.models.sequence.SequenceModel)
-dataset: the raw dataset (data/target pairs) (e.g. a pytorch Dataset)
-loader: how the data is loaded (e.g. a pytorch DataLoader)
-encoder: defines a Module that interfaces between data and model backbone
-decoder: defines a Module that interfaces between model backbone and targets
-task: specifies loss and metrics
-```
-Default combinations of dataset+loader+encoder+decoder+task are further consolidated into groups called `pipelines`.
-
-A run can be performed by passing in a pipeline config, model config,
-and any additional arguments modifying the default configurations.
-A simple example experiment is
-```
-python -m train pipeline=mnist dataset.permute=True model=s4 model.n_layers=3 model.d_model=128 model.norm=batch model.prenorm=True wandb=null
-```
-This uses the permuted sequential MNIST task and uses an s4 model with a specified number of layers, backbone dimension, and normalization type.
-
-
-### Hydra
-
-It is recommended to read the Hydra documentation to fully understand the configuration framework. For help launching specific experiments, please file an Issue.
-
-### Registries
-
-This codebase uses a modification of the hydra `instantiate` utility that provides shorthand names of different classes, for convenience in configuration and logging.
-The mapping from shorthand to full path can be found in `src/utils/registry.py`.
-
 ### WandB
 
 Logging with [WandB](https://wandb.ai/site) is built into this repository.
@@ -267,61 +185,6 @@ In order to use this, simply set your `WANDB_API_KEY` environment variable, and 
 
 Set `wandb=null` to turn off WandB logging.
 
-
-## Models
-
-This repository provides a modular and flexible implementation of sequence models at large.
-
-#### SequenceModule
-SequenceModule `src/models/sequence/base.py` is the abstract interface that all sequence models adhere to.
-In this codebase, sequence models are defined as a sequence-to-sequence map of shape `(batch size, sequence length, input dimension)` to `(batch size, sequence length, output dimension)`.
-
-The SequenceModule comes with other methods such as `step` which is meant for autoregressive settings, and logic to carry optional hidden states (for stateful models such as RNNs or S4).
-
-#### SequenceModel
-SequenceModel `src/models/sequence/model.py` is the main backbone with configurable options for residual function, normalization placement and type, etc.
-SequenceModel accepts a black box config for a layer. Compatible layers are SequenceModules (i.e. composable sequence transformations) found under `src/models/sequence/`.
-
-### S4
-
-This is the main model of this repository.
-See instructions in [Getting Started](#-structured-state-space-(s4)).
-
-### LSSL
-
-The LSSL is the predecessor of S4. It is currently not recommended for use, but the model can be found at `src/models/sequence/ss/lssl.py`.
-
-It can be run with `model/layer=lssl` or `model/layer=lssl model.layer.learn=0` for the LSSL-fixed model which does not train A, B, or dt.
-
-### HiPPO
-
-HiPPO is the mathematical framework upon which the papers HiPPO, LSSL, and S4 are built on.
-The logic for HiPPO operators is found under `src/models/hippo/`.
-
-HiPPO-RNN cells from the original [paper](https://arxiv.org/abs/2008.07669) can be found under the [RNN cells](#-rnns)
-
-### RNNs
-
-This codebase contains a flexible and modular implementation of many RNN cells.
-
-Some examples include `model=rnn/hippo-legs` and `model=rnn/hippo-legt` for HiPPO variants from the original [paper](https://arxiv.org/abs/2008.07669), or `model=rnn/gru` for a GRU reimplementation, etc.
-
-An exception is `model=lstm` to use the PyTorch LSTM.
-
-Example command (reproducing the Permuted MNIST number from the HiPPO paper, which was SotA at the time):
-```
-python train.py pipeline=mnist model=rnn/hippo-legs model.cell_args.hidden_size=512 train.epochs=50 train.batch_size=100 train.lr=0.001
-```
-
-### Baselines
-Other sequence models are easily incorporated into this repository,
-and several other baselines have been ported.
-
-These include CNNs such as the [WaveGAN Discriminator](https://arxiv.org/abs/1802.04208) and [CKConv](https://arxiv.org/abs/2102.02611) and continuous-time/RNN models such as [UnICORNN](https://arxiv.org/abs/2102.02611) and [LipschitzRNN](https://arxiv.org/abs/2006.12070).
-
-```
-python -m train dataset=mnist model={ckconv,unicornn}
-```
 
 
 ## Overall Repository Structure
@@ -346,43 +209,13 @@ train.py         training loop entrypoint
 
 
 ## Citation
-If you use this codebase, or otherwise found our work valuable, please cite:
+If you find our code or data useful, please cite:
 ```
-@article{gupta2022dss,
-  title={Diagonal State Spaces are as Effective as Structured State Spaces},
-  author={Gupta, Ankit and Gu, Albert and Berant, Jonathan},
-  journal={Advances in neural information processing systems},
-  volume={35},
-  year={2022}
-}
-
-@article{goel2022sashimi,
-  title={It's Raw! Audio Generation with State-Space Models},
-  author={Goel, Karan and Gu, Albert and Donahue, Chris and R{\'e}, Christopher},
-  journal={arXiv preprint arXiv:2202.09729},
-  year={2022}
-}
-
-@inproceedings{gu2022efficiently,
-  title={Efficiently Modeling Long Sequences with Structured State Spaces},
-  author={Gu, Albert and Goel, Karan and R\'e, Christopher},
-  booktitle={The International Conference on Learning Representations ({ICLR})},
-  year={2022}
-}
-
-@article{gu2021combining,
-  title={Combining Recurrent, Convolutional, and Continuous-time Models with Linear State-Space Layers},
-  author={Gu, Albert and Johnson, Isys and Goel, Karan and Saab, Khaled and Dao, Tri and Rudra, Atri and R{\'e}, Christopher},
-  journal={Advances in neural information processing systems},
-  volume={34},
-  year={2021}
-}
-
-@article{gu2020hippo,
-  title={HiPPO: Recurrent Memory with Optimal Polynomial Projections},
-  author={Gu, Albert and Dao, Tri and Ermon, Stefano and Rudra, Atri and R{\'e}, Christopher},
-  journal={Advances in neural information processing systems},
-  volume={33},
-  year={2020}
+@article{gupta2022dlr,
+  title={Simplifying and Understanding State Space Models with Diagonal Linear {RNN}s},
+  author={Ankit Gupta and Harsh Mehta and Jonathan Berant},
+  journal={ArXiv},
+  volume = {abs/2212.00768},
+  year={2022},
 }
 ```
