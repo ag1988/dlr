@@ -42,9 +42,9 @@ The data path can be configured by the environment variable `DATA_PATH`, or defa
 
 Atomic tasks such as Shift, Reverse, etc automatically generate data in every batch (see `./src/dataloaders/sequence1d.py`) and you dont need to generate data for these.
 
-`ListOpsSubTrees`: You can generate data as described [here](./src/dataloaders/prepare/listops/README.md).  
+`ListOpsSubTrees`: You can generate data as described [here](./src/dataloaders/prepare/listops).  
 
-`PathfinderSegmentation`: You can generate data as described [here](./src/dataloaders/prepare/pathfinder/README.md).
+`PathfinderSegmentation`: You can generate data as described [here](./src/dataloaders/prepare/pathfinder).
 
 After generating the data, it should be organized as follows:
 ```
