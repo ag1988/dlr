@@ -22,7 +22,7 @@ To generate 256 x 256 data used in DLR [paper](https://arxiv.org/abs/2212.00768)
 # args.mark_distractors = True
 # snakes2.from_wrapper(args)
 ```  
-and then run `bash.sh` containing
+and then run `run.sh` containing
 ```bash
 for i in {0..39}
 do
