@@ -194,4 +194,4 @@ dependencies:
     - yaspin==2.1.0
     - yfinance==0.1.74
     - zipp==3.7.0
-prefix: /specific/netapp5/joberant/home/ankitg/miniconda3/envs/dlr
+
