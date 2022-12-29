@@ -20,7 +20,6 @@ To generate 256 x 256 data used in DLR [paper](https://arxiv.org/abs/2212.00768)
 # args.contour_path = dataset_root
 # args.paddle_length = 8
 # args.mark_distractors = True
-# snakes2.from_wrapper(args)
 ```  
 and then run `run.sh` containing
 ```bash
