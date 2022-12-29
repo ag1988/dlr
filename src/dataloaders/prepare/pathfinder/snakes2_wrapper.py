@@ -104,7 +104,6 @@ if len(sys.argv) > 1:
 # args.snake_contrast_list = [0.9]  # how much darker are dashes compared to markers
 # args.contour_path = dataset_root  
 # args.mark_distractors = True
-# snakes2.from_wrapper(args)
 
 
 
@@ -124,7 +123,6 @@ if len(sys.argv) > 1:
 # args.contour_path = dataset_root  
 # args.paddle_length = 8
 # args.mark_distractors = True
-# snakes2.from_wrapper(args)
 
 
 
@@ -145,8 +143,11 @@ if len(sys.argv) > 1:
 # args.contour_path = dataset_root  
 # args.paddle_length = 22
 # args.mark_distractors = True
-# snakes2.from_wrapper(args)
-# 40 hrs per 2500 per cpu
+
+
+
+# generate data
+snakes2.from_wrapper(args)
 
 
 
