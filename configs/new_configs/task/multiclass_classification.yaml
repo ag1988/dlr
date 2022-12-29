@@ -1,6 +1,0 @@
-# _target_: tasks.tasks.BaseTask
-_name_: base
-loss: cross_entropy
-metrics:
-  - accuracy
-torchmetrics: null

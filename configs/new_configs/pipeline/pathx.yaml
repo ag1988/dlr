@@ -1,7 +1,0 @@
-# @package _global_
-defaults:
-  - cifar
-  - override /dataset: pathfinder
-
-dataset:
-  resolution: 128

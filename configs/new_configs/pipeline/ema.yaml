@@ -1,5 +1,0 @@
-# @package _global_
-defaults:
-  - integrator
-  - override /dataset: ema
-  - override /scheduler: constant
