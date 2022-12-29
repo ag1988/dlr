@@ -99,10 +99,10 @@ if len(sys.argv) > 1:
 # args.antialias_scale = 2
 # args.continuity = 1.8             # spread of paths - if small, paths curve quickly
 # args.paddle_length = 5            # dash len
-# args.distractor_length = args.contour_length // 3   # changed to // 3 to avoid error at range()
-# args.num_distractor_snakes = 64 / args.distractor_length  # LRA says 35 / args.distractor_length but seems inaccurate
+# args.distractor_length = args.contour_length // 3   
+# args.num_distractor_snakes = 64 / args.distractor_length
 # args.snake_contrast_list = [0.9]  # how much darker are dashes compared to markers
-# args.contour_path = dataset_root  # os.path.join(dataset_root, f'curv_contour_length_{args.contour_length}')
+# args.contour_path = dataset_root  
 # args.mark_distractors = True
 # snakes2.from_wrapper(args)
 
@@ -150,8 +150,7 @@ if len(sys.argv) > 1:
 
 
 
-
-'''
+"""
 Example usage:
 python snakes2_wrapper.py 0 10 
-'''
+"""

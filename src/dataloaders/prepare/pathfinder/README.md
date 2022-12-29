@@ -17,7 +17,7 @@ To generate 256 x 256 data used in DLR [paper](https://arxiv.org/abs/2212.00768)
 # args.distractor_length = args.contour_length // 3
 # args.num_distractor_snakes = 16
 # args.snake_contrast_list = [1.0]
-# args.contour_path = dataset_root  # os.path.join(dataset_root, f'curv_contour_length_{args.contour_length}')
+# args.contour_path = dataset_root
 # args.paddle_length = 8
 # args.mark_distractors = True
 # snakes2.from_wrapper(args)
