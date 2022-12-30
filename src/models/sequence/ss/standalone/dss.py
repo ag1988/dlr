@@ -204,28 +204,6 @@ def reciprocal(x, epsilon=1e-7, clamp=False):
     return x_conj / norm_sq
 
 
-def multiply_polynomials(x, y, pad_to_pow2=True):
-    """ 
-    x : coefficients of polynomial x(z)  [..., a+1]
-    y : coefficients of polynomial y(z)  [..., b+1]
-    returns coeffs of product x(z).y(z)  [..., a+b+1]
-    i.e. (x_0,...,x_a) * (y_0,...,y_b) --> (x_0*y_0, ..., x_0*y_r+...+x_r*y_0 , ..., x_a*y_b)
-    """
-    if all(t.is_floating_point() for t in (x, y)):
-        fft, ifft = torch.fft.rfft, torch.fft.irfft
-    else:
-        fft, ifft = torch.fft.fft, torch.fft.ifft
-    
-    # pad the polynomials to degree deg(x)+deg(y) to avoid wrap-around
-    n = (x.shape[-1] - 1) + (y.shape[-1] - 1) + 1
-    if pad_to_pow2:
-        n = 2**math.ceil(math.log2(n))                     # next pow of 2
-    x_f = fft(x, n=n)
-    y_f = fft(y, n=n)
-    xy_f = x_f * y_f
-    return ifft(xy_f, n=n)
-
-
 """ HiPPO utilities """
 
 def hippo_skew_evals(N):
@@ -317,9 +295,6 @@ class DSSKernel(OptimModule):
             log_dt = log_dt.view(-1,1).tile(2)                          # [H,2]
         
         W = torch.randn(channels, H, N, 2)                              # [C H N 2]
-        
-        # --------
-        # W = self.W_init(log_dt, Lambda, W)
         
         return log_dt, Lambda, W 
     
@@ -778,81 +753,4 @@ class DSS(nn.Module):
     @property
     def d_output(self):
         return self.h
-
-    def pretrain(self, L=2**19, num_steps=2000, min_loss=0.5):
-        '''pre-train self.kernel on shifting task'''
-        H = self.channels * self.h
-        device = 'cuda'
-        model = self.kernel.to(device)
-        y = F.one_hot(-1+torch.linspace(L/H, L, H, dtype=torch.long, device=device), L).float()
-        # y = F.one_hot(torch.randint(0, L, size=(H,), dtype=torch.long, device=device), L).float()
-        criterion = nn.MSELoss(reduction='sum')
-        optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
-
-        pbar = tqdm(range(num_steps))
-        for step in pbar:
-            K, _ = model(L=L)        # (C H L)
-            if K.ndim == 3:
-                K = K.view(-1,K.size(-1))  # (C*H L)
-            assert K.shape == (H,L)
-            loss = criterion(K, y)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            pbar.set_description(f'Pretraining kernel layer on shifting task [loss {round(loss.item(), 2)}]')
-            if loss <= min_loss:
-                break
-        
-        self.kernel = model
-        '''TODO : we cant do this for every layer - save the weights and if they match with 
-        '''
-        
-#     def step(self, u, state):
-#         """ Step one time step as a recurrent model. Intended to be used during validation.
-
-#         u: (B H)
-#         state: (B H N)
-#         Returns: output (B H), state (B H N)
-#         """
-#         assert not self.training
-
-#         y, next_state = self.kernel.step(u, state) # (B C H)
-#         y = y + u.unsqueeze(-2) * self.D
-#         y = rearrange(y, '... c h -> ... (c h)')
-#         y = self.activation(y)
-#         if self.transposed:
-#             y = self.output_linear(y.unsqueeze(-1)).squeeze(-1)
-#         else:
-#             y = self.output_linear(y)
-#         return y, next_state
-
-#     def default_state(self, *batch_shape, device=None):
-#         return self.kernel.default_state(*batch_shape)
-# 
-#     @property
-#     def state_to_tensor(self):
-#         return lambda state: rearrange('... h n -> ... (h n)', state)
-
-
-
-
-
-# -----------grad ckpt 
-
-#     def kernel(self, Lambda, W, L):
-#         P = Lambda.unsqueeze(-1) * torch.arange(L, device=W.device)     # [N' L]
-#         S = P.exp()
-#         return _r2c(einsum('chn,nlr->chlr', W, _c2r(S)))
-    
-#     def forward(self, L):
-#         chunks_of_N = self.chunks_of_N
-#         Lambda = (Lambda_im*1j).tensor_split(chunks_of_N, -1)          # [N']
-#         Ws = self.W.tensor_split(chunks_of_N, -1)                       # [C H N']
-#         K = 0
-#         for Lambda, W in zip(Lambdas, Ws): 
-#             if chunks_of_N > 1:
-#                 K = K + checkpoint(partial(self.kernel, L=L), Lambda, W, preserve_rng_state=False)
-#             else:
-#                 K = self.kernel(Lambda, W, L=L)
-#         return DSSKernel.kernel_to_real(K, self.kernel_to_real), state
 
