@@ -377,9 +377,6 @@ class DSSKernel(OptimModule):
             W = W * (dt_Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)   # [C H N]
         
         # else exp-no-scale
-        # else:  # exp-no-scale
-            # W = W * (dt_Lambda.exp() - 1)
-            # W = W * reciprocal(Lambda, clamp=True)   # [C H N]
         
         # has_pykeops = False
         if not has_pykeops:
@@ -488,9 +485,6 @@ class DLRKernel(OptimModule):
             w = -.5*dt + 2j*np.pi*torch.arange(N) / N                    # [N]
         elif Lambda_init == 'randn':
             w = -.5*dt + 1j*torch.randn(N)                               # [N]
-        # elif Lambda_init == 'hippo_skew_pos_imag':
-        #     # w = -1e-5 + hippo_skew_evals(2*N)[:N]                         # [N]
-        #     w = dt*(-.5 + hippo_skew_evals(2*N)[:N])                      # [N]
         else:
             raise NotImplementedError(f"Lambda init {Lambda_init} is not implemented")
         
@@ -561,11 +555,10 @@ class DLRKernel(OptimModule):
         else:
             Lambda, W = self.get_params()                              # [N], [C H N]
             
-            #---------- like DSS
-            # W = W * (Lambda.exp() - 1) * reciprocal(Lambda, clamp=True)   # [C H N]
-            
-            K = self.kernel_pykeops(W, Lambda, L=L)                    # [C H L 2]
-            # K = self.kernel(W, Lambda, L=L)                          # [C H L 2]
+            if self.pykeops:
+                K = self.kernel_pykeops(W, Lambda, L=L)                # [C H L 2]
+            else:
+                K = self.kernel(W, Lambda, L=L)                        # [C H L 2]
         return self.cast_kernel(K, self.kernel_to_real), state         # [C H L]
     
     @staticmethod
@@ -748,26 +741,16 @@ class DSS(nn.Module):
         Lk = min(self.max_kernel_length, L) if (self.max_kernel_length and self.max_kernel_length > 0) else L 
         k, _ = self.kernel(L=Lk)  # (C H Lk) (B C H Lk)
         
-        offset = 0
-        n = u.size(-1) + k.size(-1)
+        n = L + Lk
         
         if self.bidirectional:
-            if Lk >= L/2:
-                k_lr, k_rl = rearrange(F.pad(k, (0,L-Lk)), '(s c) h l -> s c h l', s=2)  # (C H L)
-                k = torch.cat((k_lr, k_rl.flip(-1)), dim=-1)            # (C H 2L)
-                n = 2*L
-            else: # more efficient for smaller kernels
-                k_lr, k_rl = rearrange(k, '(s c) h l -> s c h l', s=2)  # (C H Lk)
-                k = torch.cat((k_rl.flip(-1), k_lr), dim=-1)            # (C H 2Lk)
-                # K(x) = K_{-Lk}z^{-Lk} + ... + K_{Lk-1}z^{Lk-1}
-                # K(z)u(z) = z^{-Lk} x (K_{-Lk}z^0 + ... K_{Lk-1}z^{2Lk-1}) x (u_{0}z^0 + ... u_{L-1}z^{L-1})
-                offset = Lk  # == left shift by Lk coeffs of (K_{-Lk}z^0 +... K_{Lk-1}z^{2Lk-1}).(u_{0}z^0 +... u_{L-1}z^{L-1})
-                n = u.size(-1) + k.size(-1)
+            k_lr, k_rl = rearrange(k, '(s c) h l -> s c h l', s=2)             # (C H Lk)
+            k = torch.cat((F.pad(k_lr, (0, n-2*Lk)), k_rl.flip(-1)), dim=-1)   # (C H n)
                 
-        k_f = torch.fft.rfft(k, n=n)  # (C H ~n/2)
-        u_f = torch.fft.rfft(u, n=n)  # (B H ~n/2)
-        y_f = contract('bhl,chl->bchl', u_f, k_f) # k_f.unsqueeze(-4) * u_f.unsqueeze(-3) # (B C H L)
-        y = torch.fft.irfft(y_f, n=n)[..., offset:offset+L]  # (B C H L)
+        k_f = torch.fft.rfft(k, n=n)               # (C H ~n/2)
+        u_f = torch.fft.rfft(u, n=n)               # (B H ~n/2)
+        y_f = contract('bhl,chl->bchl', u_f, k_f)  # (B C H ~n/2)
+        y = torch.fft.irfft(y_f, n=n)[..., :L]     # (B C H L)
                 
         # Compute D term in state space equation - essentially a skip connection
         y = y + contract('bhl,ch->bchl', u, self.D) # u.unsqueeze(-3) * self.D.unsqueeze(-1)
